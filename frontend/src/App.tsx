@@ -9,7 +9,24 @@ type Telemetry = {
   jitterMs: number;
   lossRate: number;
   bandwidthKbps: number;
+  backendLossRate: number;
+  queuePending: number;
 };
+
+type NetworkProfile = {
+  key: string;
+  label: string;
+  delayMs: number;
+  jitterMs: number;
+  lossRate: number;
+  bandwidthKbps: number;
+};
+
+const NETWORK_PROFILES: NetworkProfile[] = [
+  { key: "good", label: "良好网络", delayMs: 25, jitterMs: 3, lossRate: 0.001, bandwidthKbps: 12000 },
+  { key: "mid", label: "中等拥塞", delayMs: 700, jitterMs: 220, lossRate: 0.12, bandwidthKbps: 320 },
+  { key: "bad", label: "恶劣网络", delayMs: 2250, jitterMs: 750, lossRate: 0.45, bandwidthKbps: 64 },
+];
 
 const DEFAULT_JOINTS = [0.3, -0.5, 0.7, 0.2];
 
@@ -103,16 +120,27 @@ function Arm3D({ joints, grip }: { joints: number[]; grip: number }) {
 
 export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
+  const cmdSeqRef = useRef(1);
+  const pendingRef = useRef<Map<number, number>>(new Map());
+  const sentCountRef = useRef(0);
+  const ackCountRef = useRef(0);
+  const lastRttRef = useRef<number | null>(null);
+  const jitterEwmaRef = useRef(0);
+
   const [connected, setConnected] = useState("未连接");
   const [stepDeg, setStepDeg] = useState(5);
   const [grip, setGrip] = useState(0.7);
   const [joints, setJoints] = useState<number[]>(DEFAULT_JOINTS);
+  const [activeProfile, setActiveProfile] = useState<string>(NETWORK_PROFILES[0].key);
+
   const [telemetry, setTelemetry] = useState<Telemetry>({
     seq: 0,
     latencyMs: 0,
     jitterMs: 0,
     lossRate: 0,
     bandwidthKbps: 0,
+    backendLossRate: 0,
+    queuePending: 0,
   });
 
   const send = useCallback((payload: object) => {
@@ -124,10 +152,33 @@ export default function App() {
   const sendJoints = useCallback(
     (nextJoints: number[]) => {
       const clamped = nextJoints.map(clampRad);
-      setJoints(clamped);
+      const cmdSeq = cmdSeqRef.current++;
+      const ts = Date.now();
+      pendingRef.current.set(cmdSeq, ts);
+      sentCountRef.current += 1;
+
       send({
         type: "robot_joint_control",
+        cmd_seq: cmdSeq,
+        client_timestamp: ts,
         payload: { target_positions: [...clamped, 0, 0, 0], steps: 8 },
+      });
+    },
+    [send]
+  );
+
+  const applyProfile = useCallback(
+    (profile: NetworkProfile) => {
+      setActiveProfile(profile.key);
+      send({
+        type: "network_profile",
+        payload: {
+          delay_ms: profile.delayMs,
+          jitter_ms: profile.jitterMs,
+          loss_rate: profile.lossRate,
+          bandwidth_kbps: profile.bandwidthKbps,
+          queue_penalty_ms: profile.key === "bad" ? 300 : profile.key === "mid" ? 180 : 70,
+        },
       });
     },
     [send]
@@ -172,7 +223,10 @@ export default function App() {
       wsRef.current = ws;
       setConnected("连接中");
 
-      ws.onopen = () => setConnected("已连接");
+      ws.onopen = () => {
+        setConnected("已连接");
+        applyProfile(NETWORK_PROFILES[0]);
+      };
       ws.onerror = () => setConnected("连接错误");
       ws.onclose = () => {
         setConnected("已断开，重连中");
@@ -184,20 +238,56 @@ export default function App() {
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data) as {
           type?: string;
+          cmd_seq?: number;
+          client_timestamp?: number;
           seq?: number;
           network_stats?: { avg_total_delay_ms?: number; observed_loss_rate?: number };
-          network_config?: { jitter_ms?: number; bandwidth_kbps?: number };
+          network_config?: { delay_ms?: number; jitter_ms?: number; loss_rate?: number; bandwidth_kbps?: number };
+          queue?: { pending?: number };
           simulation_status?: { joint_positions?: number[] };
         };
 
+        if (data.type === "ack") {
+          const ackSeq = data.cmd_seq ?? -1;
+          const sentTs = pendingRef.current.get(ackSeq);
+          if (sentTs !== undefined) {
+            pendingRef.current.delete(ackSeq);
+            ackCountRef.current += 1;
+
+            const rtt = Date.now() - sentTs;
+            const last = lastRttRef.current;
+            const j = last === null ? 0 : Math.abs(rtt - last);
+            jitterEwmaRef.current = jitterEwmaRef.current * 0.8 + j * 0.2;
+            lastRttRef.current = rtt;
+
+            const sent = sentCountRef.current;
+            const acked = ackCountRef.current;
+            const calculatedLoss = sent > 0 ? (sent - acked) / sent : 0;
+
+            setTelemetry((prev) => ({
+              ...prev,
+              latencyMs: rtt,
+              jitterMs: jitterEwmaRef.current,
+              lossRate: calculatedLoss,
+            }));
+          }
+          return;
+        }
+
         if (data.type !== "telemetry") return;
+
+        const sent = sentCountRef.current;
+        const acked = ackCountRef.current;
+        const calculatedLoss = sent > 0 ? (sent - acked) / sent : 0;
 
         setTelemetry({
           seq: data.seq ?? 0,
-          latencyMs: data.network_stats?.avg_total_delay_ms ?? 0,
-          jitterMs: data.network_config?.jitter_ms ?? 0,
-          lossRate: data.network_stats?.observed_loss_rate ?? 0,
+          latencyMs: lastRttRef.current ?? data.network_stats?.avg_total_delay_ms ?? 0,
+          jitterMs: jitterEwmaRef.current || data.network_config?.jitter_ms || 0,
+          lossRate: calculatedLoss,
           bandwidthKbps: data.network_config?.bandwidth_kbps ?? 0,
+          backendLossRate: data.network_stats?.observed_loss_rate ?? 0,
+          queuePending: data.queue?.pending ?? 0,
         });
 
         const next = data.simulation_status?.joint_positions ?? [];
@@ -245,6 +335,15 @@ export default function App() {
                 <Button variant="contained" color="warning" onClick={grab}>抓取</Button>
                 <Button variant="outlined" color="warning" onClick={release}>松开</Button>
                 <Button variant="text" color="error" onClick={reset}>复位</Button>
+                {NETWORK_PROFILES.map((profile) => (
+                  <Button
+                    key={profile.key}
+                    variant={activeProfile === profile.key ? "contained" : "outlined"}
+                    onClick={() => applyProfile(profile)}
+                  >
+                    {profile.label}
+                  </Button>
+                ))}
               </div>
             </Card>
           </Grid>
@@ -321,12 +420,27 @@ export default function App() {
                 <Card style={{ padding: 16 }}>
                   <p style={{ margin: 0, color: "#475569" }}>丢包率</p>
                   <div style={{ fontSize: 38, fontWeight: 700, color: lossColor }}>{(telemetry.lossRate * 100).toFixed(2)}%</div>
+                  <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
+                    后端观测：{(telemetry.backendLossRate * 100).toFixed(2)}%
+                  </p>
                 </Card>
               </Grid>
               <Grid item xs={12} sm={6} md={12}>
                 <Card style={{ padding: 16 }}>
                   <p style={{ margin: 0, color: "#475569" }}>带宽</p>
                   <div style={{ fontSize: 38, fontWeight: 700, color: bandwidthColor }}>{telemetry.bandwidthKbps.toFixed(0)} kbps</div>
+                  <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
+                    队列积压：
+                    <span
+                      style={{
+                        color: telemetry.queuePending > 5 ? "#dc2626" : "#64748b",
+                        fontWeight: telemetry.queuePending > 5 ? 700 : 400,
+                        marginLeft: 4,
+                      }}
+                    >
+                      {telemetry.queuePending}
+                    </span>
+                  </p>
                 </Card>
               </Grid>
             </Grid>

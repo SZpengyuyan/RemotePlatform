@@ -1,29 +1,25 @@
 # 机器人远程操控仿真与可视化平台
 
-本项目已整理为 Docker 单一启动方式，避免本地 Python 虚拟环境和多套命令。
+用于演示"网络环境变化如何影响远程机械臂操控"的极简闭环平台（前端控制 + 后端网络仿真 + 3D可视化）。
 
-## 启动（唯一推荐）
+## 启动（唯一方式）
 
-在项目根目录执行：
-
-先确认 Docker Desktop 已启动（Docker Engine 处于 Running）。
+先确认 Docker Desktop 已启动，然后在项目根目录执行：
 
 ```bash
 docker compose up --build
 ```
 
-启动后访问：
+访问地址：
 - 前端：`http://localhost:8080`
 - 后端健康检查：`http://localhost:8000/health`
 
-## 停止
+停止：
 
 ```bash
 docker compose down
 ```
 
-## 目录说明
+## 详细文档
 
-- `docker-compose.yml`：前后端统一编排入口
-- `backend/`：FastAPI 服务（容器内监听 `8000`）
-- `frontend/`：Vite 构建 + Nginx 静态托管（容器内监听 `80`，映射到宿主机 `8080`）
+完整架构、模块职责、当前项目进度与验证方法见：`项目最精简架构与启动说明.md`

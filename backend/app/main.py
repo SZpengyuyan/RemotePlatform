@@ -38,6 +38,7 @@ class QueuedCommand:
     cmd_seq: int
     client_timestamp: float
     target_positions: list[float]
+    steps: int
     simulated_delay_ms: float
 
 
@@ -54,6 +55,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
     telemetry_seq = 0
     network = SimNetwork()
     queue: list[QueuedCommand] = []
+    motion_waypoints: list[list[float]] = []
     queue_seq = 0
 
     cmd_total = 0
@@ -71,6 +73,8 @@ async def ws_telemetry(websocket: WebSocket) -> None:
             if msg_type == "robot_joint_control":
                 cmd_total += 1
                 targets = payload.get("target_positions", [])
+                requested_steps = int(payload.get("steps", 8))
+                steps = max(1, min(60, requested_steps))
                 cmd_seq = int(message.get("cmd_seq", 0))
                 client_timestamp = float(message.get("client_timestamp", 0))
 
@@ -108,6 +112,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                             cmd_seq=cmd_seq,
                             client_timestamp=client_timestamp,
                             target_positions=safe_targets,
+                            steps=steps,
                             simulated_delay_ms=total_delay_ms,
                         )
                     )
@@ -115,6 +120,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
 
             if msg_type == "robot_reset":
                 joints = DEFAULT_JOINTS.copy()
+                motion_waypoints.clear()
 
             if msg_type == "network_profile":
                 network.delay_ms = max(0.0, float(payload.get("delay_ms", network.delay_ms)))
@@ -137,7 +143,18 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                 continue
 
             cmd = queue.pop(0)
-            joints = cmd.target_positions
+            start = motion_waypoints[-1] if motion_waypoints else joints.copy()
+            steps = max(1, cmd.steps)
+            for i in range(1, steps + 1):
+                t = i / steps
+                waypoint = [
+                    (start[0] * (1 - t)) + (cmd.target_positions[0] * t),
+                    (start[1] * (1 - t)) + (cmd.target_positions[1] * t),
+                    (start[2] * (1 - t)) + (cmd.target_positions[2] * t),
+                    (start[3] * (1 - t)) + (cmd.target_positions[3] * t),
+                ]
+                motion_waypoints.append(waypoint)
+
             delay_sum_ms += cmd.simulated_delay_ms
             delay_samples += 1
 
@@ -149,8 +166,16 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                     "server_recv_ts": cmd.apply_ts - cmd.simulated_delay_ms / 1000.0,
                     "server_apply_ts": time.time(),
                     "simulated_delay_ms": round(cmd.simulated_delay_ms, 2),
+                    "trajectory_steps": steps,
                 }
             )
+
+    async def motion_stepper() -> None:
+        nonlocal joints
+        while True:
+            if motion_waypoints:
+                joints = motion_waypoints.pop(0)
+            await asyncio.sleep(0.02)
 
     async def sender() -> None:
         nonlocal telemetry_seq
@@ -173,24 +198,29 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                         "loss_rate": round(network.loss_rate, 4),
                         "bandwidth_kbps": round(network.bandwidth_kbps, 1),
                     },
-                    "queue": {"pending": len(queue)},
+                    "queue": {
+                        "pending": len(queue),
+                        "waypoint_pending": len(motion_waypoints),
+                    },
                     "simulation_status": {
                         "joint_positions": joints,
                     },
                 }
             )
             telemetry_seq += 1
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
 
     receiver_task = asyncio.create_task(receiver())
     processor_task = asyncio.create_task(command_processor())
+    motion_stepper_task = asyncio.create_task(motion_stepper())
     sender_task = asyncio.create_task(sender())
 
     try:
-        await asyncio.gather(receiver_task, processor_task, sender_task)
+        await asyncio.gather(receiver_task, processor_task, motion_stepper_task, sender_task)
     except WebSocketDisconnect:
         pass
     finally:
         receiver_task.cancel()
         processor_task.cancel()
+        motion_stepper_task.cancel()
         sender_task.cancel()

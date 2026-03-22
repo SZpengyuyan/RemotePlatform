@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, Grid, Slider } from "@mui/material";
 import { Canvas } from "@react-three/fiber";
-import { ContactShadows, Environment, OrbitControls, PerspectiveCamera } from "@react-three/drei";
+import { ContactShadows, Environment, OrbitControls, PerspectiveCamera, useGLTF } from "@react-three/drei";
+import type { Object3D } from "three";
 
 type Telemetry = {
   seq: number;
@@ -29,6 +30,13 @@ const NETWORK_PROFILES: NetworkProfile[] = [
 ];
 
 const DEFAULT_JOINTS = [0.3, -0.5, 0.7, 0.2];
+const ROBOT_MODEL_URL = "/assets/robot/ur5e.glb";
+
+function isValidGlb(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < 4) return false;
+  // GLB magic should be ASCII "glTF" (0x46546c67, little-endian).
+  return new DataView(buffer).getUint32(0, true) === 0x46546c67;
+}
 
 function wsUrl(): string {
   const host = window.location.hostname || "localhost";
@@ -118,6 +126,14 @@ function Arm3D({ joints, grip }: { joints: number[]; grip: number }) {
   );
 }
 
+function RobotModelAsset() {
+  const { scene } = useGLTF(ROBOT_MODEL_URL);
+
+  const cloned = useMemo<Object3D>(() => scene.clone(true), [scene]);
+
+  return <primitive object={cloned} scale={1.25} position={[0, 0, 0]} rotation={[0, Math.PI, 0]} />;
+}
+
 export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const cmdSeqRef = useRef(1);
@@ -132,6 +148,7 @@ export default function App() {
   const [grip, setGrip] = useState(0.7);
   const [joints, setJoints] = useState<number[]>(DEFAULT_JOINTS);
   const [activeProfile, setActiveProfile] = useState<string>(NETWORK_PROFILES[0].key);
+  const [hasRobotModelAsset, setHasRobotModelAsset] = useState(false);
 
   const [telemetry, setTelemetry] = useState<Telemetry>({
     seq: 0,
@@ -211,6 +228,30 @@ export default function App() {
     setGrip(0.7);
     send({ type: "robot_reset", payload: { initial_positions: [0, 0, 0, 0, 0, 0, 0] } });
   }, [send]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    const checkModelAsset = async () => {
+      try {
+        const response = await fetch(ROBOT_MODEL_URL, { cache: "no-store" });
+        const binary = await response.arrayBuffer();
+        if (!disposed) {
+          setHasRobotModelAsset(response.ok && isValidGlb(binary));
+        }
+      } catch {
+        if (!disposed) {
+          setHasRobotModelAsset(false);
+        }
+      }
+    };
+
+    void checkModelAsset();
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -351,6 +392,9 @@ export default function App() {
           <Grid item xs={12} md={5}>
             <Card style={{ padding: 16, height: "100%" }}>
               <h3 style={{ marginTop: 0 }}>3D机械臂</h3>
+              <p style={{ marginTop: -6, marginBottom: 10, color: "#475569", fontSize: 12 }}>
+                {hasRobotModelAsset ? "已加载真实模型资产（ur5e.glb）" : "未检测到模型资产，使用内置几何机械臂"}
+              </p>
               <div style={{ height: 420, borderRadius: 12, overflow: "hidden", background: "#dbeafe" }}>
                 <Canvas
                   shadows
@@ -387,7 +431,13 @@ export default function App() {
                     <meshStandardMaterial color="#d6deea" roughness={0.78} metalness={0.08} />
                   </mesh>
 
-                  <Arm3D joints={joints} grip={grip} />
+                  {hasRobotModelAsset ? (
+                    <Suspense fallback={null}>
+                      <RobotModelAsset />
+                    </Suspense>
+                  ) : (
+                    <Arm3D joints={joints} grip={grip} />
+                  )}
                   <ContactShadows
                     position={[0, 0, 0]}
                     opacity={0.55}

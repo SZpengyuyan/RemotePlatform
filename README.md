@@ -27,7 +27,7 @@ docker compose down
 ## 分步改造（MuJoCo思路迁移）
 
 当前已完成：
-- 前端支持真实模型资产加载（若存在 `frontend/public/assets/robot/ur5e.glb` 则优先使用）。
+- 前端支持真实模型资产加载（若存在 `frontend/public/assets/robot/ur5e_obj/*.obj` 则优先使用）。
 - 若模型文件不存在，自动回退到内置几何机械臂，保证演示与启动流程不受影响。
 - 后端已引入关节轨迹插值（`robot_joint_control` 改为分步 waypoint 执行）。
 - 已新增末端目标控制（轻量 IK）：前端发送末端目标，后端逆解并映射到关节轨迹。

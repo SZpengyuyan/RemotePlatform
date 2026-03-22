@@ -1,8 +1,9 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, Grid, Slider } from "@mui/material";
-import { Canvas } from "@react-three/fiber";
-import { ContactShadows, Environment, OrbitControls, PerspectiveCamera, useGLTF } from "@react-three/drei";
-import type { Object3D } from "three";
+import { Canvas, useLoader } from "@react-three/fiber";
+import { ContactShadows, Environment, OrbitControls, PerspectiveCamera } from "@react-three/drei";
+import { Box3, Group, Mesh, MeshStandardMaterial, Vector3 } from "three";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 
 type Telemetry = {
   seq: number;
@@ -30,12 +31,33 @@ const NETWORK_PROFILES: NetworkProfile[] = [
 ];
 
 const DEFAULT_JOINTS = [0.3, -0.5, 0.7, 0.2];
-const ROBOT_MODEL_URL = "/assets/robot/ur5e.glb";
+const UR5E_OBJ_BASE = "/assets/robot/ur5e_obj";
+const UR5E_OBJ_FILES = [
+  "base_0.obj",
+  "base_1.obj",
+  "shoulder_0.obj",
+  "shoulder_1.obj",
+  "shoulder_2.obj",
+  "upperarm_0.obj",
+  "upperarm_1.obj",
+  "upperarm_2.obj",
+  "upperarm_3.obj",
+  "forearm_0.obj",
+  "forearm_1.obj",
+  "forearm_2.obj",
+  "forearm_3.obj",
+  "wrist1_0.obj",
+  "wrist1_1.obj",
+  "wrist1_2.obj",
+  "wrist2_0.obj",
+  "wrist2_1.obj",
+  "wrist2_2.obj",
+  "wrist3.obj",
+];
 
-function isValidGlb(buffer: ArrayBuffer): boolean {
-  if (buffer.byteLength < 4) return false;
-  // GLB magic should be ASCII "glTF" (0x46546c67, little-endian).
-  return new DataView(buffer).getUint32(0, true) === 0x46546c67;
+function isLikelyObj(content: string): boolean {
+  // Basic OBJ signal: vertices + faces appear in plaintext.
+  return /(^|\n)v\s+[-\d.eE]+\s+[-\d.eE]+\s+[-\d.eE]+/.test(content) && /(^|\n)f\s+/.test(content);
 }
 
 function wsUrl(): string {
@@ -126,12 +148,130 @@ function Arm3D({ joints, grip }: { joints: number[]; grip: number }) {
   );
 }
 
-function RobotModelAsset() {
-  const { scene } = useGLTF(ROBOT_MODEL_URL);
+function RobotModelAsset({ joints }: { joints: number[] }) {
+  const loadedObjects = useLoader(
+    OBJLoader,
+    UR5E_OBJ_FILES.map((file) => `${UR5E_OBJ_BASE}/${file}`)
+  );
 
-  const cloned = useMemo<Object3D>(() => scene.clone(true), [scene]);
+  const materialPalette = useMemo(
+    () => ({
+      black: new MeshStandardMaterial({ color: "#111111", metalness: 0.65, roughness: 0.3 }),
+      jointgray: new MeshStandardMaterial({ color: "#474747", metalness: 0.55, roughness: 0.35 }),
+      linkgray: new MeshStandardMaterial({ color: "#d1d5db", metalness: 0.45, roughness: 0.4 }),
+      urblue: new MeshStandardMaterial({ color: "#3ea9cc", metalness: 0.5, roughness: 0.35 }),
+    }),
+    []
+  );
 
-  return <primitive object={cloned} scale={1.25} position={[0, 0, 0]} rotation={[0, Math.PI, 0]} />;
+  const partMaterialKey: Record<string, keyof typeof materialPalette> = {
+    "base_0.obj": "black",
+    "base_1.obj": "jointgray",
+    "shoulder_0.obj": "urblue",
+    "shoulder_1.obj": "black",
+    "shoulder_2.obj": "jointgray",
+    "upperarm_0.obj": "linkgray",
+    "upperarm_1.obj": "black",
+    "upperarm_2.obj": "jointgray",
+    "upperarm_3.obj": "urblue",
+    "forearm_0.obj": "urblue",
+    "forearm_1.obj": "linkgray",
+    "forearm_2.obj": "black",
+    "forearm_3.obj": "jointgray",
+    "wrist1_0.obj": "black",
+    "wrist1_1.obj": "urblue",
+    "wrist1_2.obj": "jointgray",
+    "wrist2_0.obj": "black",
+    "wrist2_1.obj": "urblue",
+    "wrist2_2.obj": "jointgray",
+    "wrist3.obj": "linkgray",
+  };
+
+  const preparedParts = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof loadedObjects[number]["clone"]>>();
+
+    UR5E_OBJ_FILES.forEach((file, idx) => {
+      const src = loadedObjects[idx];
+      const clone = src.clone(true);
+      const key = partMaterialKey[file];
+      const mat = materialPalette[key];
+      clone.traverse((node) => {
+        const mesh = node as Mesh;
+        if (!mesh.isMesh) return;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.material = mat;
+      });
+      map.set(file, clone);
+    });
+
+    return map;
+  }, [loadedObjects, materialPalette]);
+
+  const modelRootRef = useRef<Group | null>(null);
+  const [offset, setOffset] = useState<[number, number, number]>([0, 0, 0]);
+
+  useEffect(() => {
+    if (!modelRootRef.current) return;
+    const box = new Box3().setFromObject(modelRootRef.current);
+    const center = box.getCenter(new Vector3());
+    setOffset([-center.x, -box.min.y, -center.z]);
+  }, [preparedParts]);
+
+  const y45Quat: [number, number, number, number] = [0, Math.SQRT1_2, 0, Math.SQRT1_2];
+
+  const part = (file: string) => {
+    const obj = preparedParts.get(file);
+    if (!obj) return null;
+    return <primitive key={file} object={obj} />;
+  };
+
+  return (
+    <group ref={modelRootRef} position={[offset[0], offset[1], offset[2]]} rotation={[0, Math.PI, 0]} scale={1.25}>
+      <group>
+        {part("base_0.obj")}
+        {part("base_1.obj")}
+
+        <group position={[0, 0, 0.163]} rotation={[0, 0, joints[0] ?? 0]}>
+          {part("shoulder_0.obj")}
+          {part("shoulder_1.obj")}
+          {part("shoulder_2.obj")}
+
+          <group position={[0, 0.138, 0]} quaternion={y45Quat}>
+            <group rotation={[0, joints[1] ?? 0, 0]}>
+              {part("upperarm_0.obj")}
+              {part("upperarm_1.obj")}
+              {part("upperarm_2.obj")}
+              {part("upperarm_3.obj")}
+
+              <group position={[0, -0.131, 0.425]} rotation={[0, joints[2] ?? 0, 0]}>
+                {part("forearm_0.obj")}
+                {part("forearm_1.obj")}
+                {part("forearm_2.obj")}
+                {part("forearm_3.obj")}
+
+                <group position={[0, 0, 0.392]} quaternion={y45Quat}>
+                  <group rotation={[0, joints[3] ?? 0, 0]}>
+                    {part("wrist1_0.obj")}
+                    {part("wrist1_1.obj")}
+                    {part("wrist1_2.obj")}
+
+                    <group position={[0, 0.127, 0]}>
+                      {part("wrist2_0.obj")}
+                      {part("wrist2_1.obj")}
+                      {part("wrist2_2.obj")}
+
+                      <group position={[0, 0, 0.1]}>{part("wrist3.obj")}</group>
+                    </group>
+                  </group>
+                </group>
+              </group>
+            </group>
+          </group>
+        </group>
+      </group>
+    </group>
+  );
 }
 
 export default function App() {
@@ -263,10 +403,10 @@ export default function App() {
 
     const checkModelAsset = async () => {
       try {
-        const response = await fetch(ROBOT_MODEL_URL, { cache: "no-store" });
-        const binary = await response.arrayBuffer();
+        const response = await fetch(`${UR5E_OBJ_BASE}/base_0.obj`, { cache: "no-store" });
+        const text = await response.text();
         if (!disposed) {
-          setHasRobotModelAsset(response.ok && isValidGlb(binary));
+          setHasRobotModelAsset(response.ok && isLikelyObj(text));
         }
       } catch {
         if (!disposed) {
@@ -462,7 +602,7 @@ export default function App() {
             <Card style={{ padding: 16, height: "100%" }}>
               <h3 style={{ marginTop: 0 }}>3D机械臂</h3>
               <p style={{ marginTop: -6, marginBottom: 10, color: "#475569", fontSize: 12 }}>
-                {hasRobotModelAsset ? "已加载真实模型资产（ur5e.glb）" : "未检测到模型资产，使用内置几何机械臂"}
+                {hasRobotModelAsset ? "已加载真实模型资产（ur5e OBJ）" : "未检测到模型资产，使用内置几何机械臂"}
               </p>
               <div style={{ height: 420, borderRadius: 12, overflow: "hidden", background: "#dbeafe" }}>
                 <Canvas
@@ -470,7 +610,7 @@ export default function App() {
                   gl={{ antialias: true, powerPreference: "high-performance" }}
                   dpr={[1, 1.8]}
                 >
-                  <PerspectiveCamera makeDefault position={[5.8, 4.8, 6.6]} fov={52} />
+                  <PerspectiveCamera makeDefault position={[3.8, 2.55, 4.4]} fov={48} />
                   <color attach="background" args={["#dbeafe"]} />
                   <fog attach="fog" args={["#dbeafe", 8, 18]} />
 
@@ -502,7 +642,7 @@ export default function App() {
 
                   {hasRobotModelAsset ? (
                     <Suspense fallback={null}>
-                      <RobotModelAsset />
+                      <RobotModelAsset joints={joints} />
                     </Suspense>
                   ) : (
                     <Arm3D joints={joints} grip={grip} />
@@ -515,7 +655,7 @@ export default function App() {
                     far={3.8}
                     color="#1e293b"
                   />
-                  <OrbitControls makeDefault enablePan={false} target={[0, 1.7, 0]} minDistance={4} maxDistance={12} />
+                  <OrbitControls makeDefault enablePan={false} target={[0, 1.2, 0]} minDistance={2.8} maxDistance={11} />
                 </Canvas>
               </div>
             </Card>

@@ -285,7 +285,6 @@ export default function App() {
 
   const [connected, setConnected] = useState("未连接");
   const [stepDeg, setStepDeg] = useState(5);
-  const [grip, setGrip] = useState(0.7);
   const [joints, setJoints] = useState<number[]>(DEFAULT_JOINTS);
   const [activeProfile, setActiveProfile] = useState<string>(NETWORK_PROFILES[0].key);
   const [hasRobotModelAsset, setHasRobotModelAsset] = useState(false);
@@ -383,16 +382,12 @@ export default function App() {
     sendJoints([(joints[0] ?? 0), (joints[1] ?? 0) + step, (joints[2] ?? 0) - step, (joints[3] ?? 0)]);
   }, [joints, sendJoints, stepDeg]);
 
-  const grab = useCallback(() => setGrip((v) => Math.max(0.1, v - 0.2)), []);
-  const release = useCallback(() => setGrip((v) => Math.min(1, v + 0.2)), []);
-
   const applyEeControl = useCallback(() => {
     sendEeTarget(eeTarget, eeWristPitchDeg);
   }, [eeTarget, eeWristPitchDeg, sendEeTarget]);
 
   const reset = useCallback(() => {
     setJoints(DEFAULT_JOINTS);
-    setGrip(0.7);
     setEeTarget({ x: 0.0, y: 1.7, z: 1.6 });
     setEeWristPitchDeg(-25);
     send({ type: "robot_reset", payload: { initial_positions: [0, 0, 0, 0, 0, 0, 0] } });
@@ -542,8 +537,6 @@ export default function App() {
                 <Button variant="contained" onClick={() => updateJoint0(-stepDeg)}>关节1 -{stepDeg}°</Button>
                 <Button variant="contained" color="success" onClick={moveForward}>向前</Button>
                 <Button variant="outlined" color="success" onClick={moveBackward}>向后</Button>
-                <Button variant="contained" color="warning" onClick={grab}>抓取</Button>
-                <Button variant="outlined" color="warning" onClick={release}>松开</Button>
 
                 <Card variant="outlined" style={{ padding: 10 }}>
                   <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>末端目标控制（IK）</p>
@@ -645,7 +638,7 @@ export default function App() {
                       <RobotModelAsset joints={joints} />
                     </Suspense>
                   ) : (
-                    <Arm3D joints={joints} grip={grip} />
+                    <Arm3D joints={joints} grip={0.7} />
                   )}
                   <ContactShadows
                     position={[0, 0, 0]}

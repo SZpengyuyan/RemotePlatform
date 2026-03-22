@@ -3,12 +3,24 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import random
 import time
 from dataclasses import dataclass
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+
+# Physics engine selection
+PHYSICS_ENGINE = os.getenv("PHYSICS_ENGINE", "lightweight").lower()
+MUJOCO_AVAILABLE = False
+
+try:
+    import mujoco as mj
+    import mujoco.viewer
+    MUJOCO_AVAILABLE = True
+except ImportError:
+    pass
 
 app = FastAPI(title="Remote Platform Minimal Backend", version="1.0.0")
 
@@ -21,6 +33,216 @@ app.add_middleware(
 )
 
 DEFAULT_JOINTS = [0.3, -0.5, 0.7, 0.2]
+
+
+# Physics Engine Abstraction
+class PhysicsEngine:
+    """Base class for physics simulation."""
+    
+    def get_name(self) -> str:
+        raise NotImplementedError
+    
+    def initialize(self) -> None:
+        """Initialize physics engine resources."""
+        pass
+    
+    def cleanup(self) -> None:
+        """Clean up resources."""
+        pass
+    
+    def step(self, joints: list[float], target: list[float], steps: int) -> list[list[float]]:
+        """Generate waypoints from current to target. Returns list of interpolated positions."""
+        raise NotImplementedError
+
+    def runtime_status(self) -> dict:
+        return {
+            "active": self.get_name(),
+            "using_internal_fallback": False,
+            "model_loaded": False,
+            "fallback_reason": "",
+        }
+
+    def metrics(self, target_positions: list[float] | None = None) -> dict:
+        return {
+            "tracking_error_rad": 0.0,
+            "qvel_norm": 0.0,
+        }
+
+
+class LightweightPhysicsEngine(PhysicsEngine):
+    """Simple linear interpolation without physics simulation."""
+    
+    def get_name(self) -> str:
+        return "lightweight"
+    
+    def step(self, joints: list[float], target: list[float], steps: int) -> list[list[float]]:
+        """Linear interpolation between joints and target."""
+        steps = max(1, steps)
+        waypoints = []
+        for i in range(1, steps + 1):
+            t = i / steps
+            waypoint = [
+                (joints[j] * (1 - t)) + (target[j] * t)
+                for j in range(len(target))
+            ]
+            waypoints.append(waypoint)
+        return waypoints
+
+    def runtime_status(self) -> dict:
+        return {
+            "active": self.get_name(),
+            "using_internal_fallback": False,
+            "model_loaded": False,
+            "fallback_reason": "",
+        }
+
+
+class MuJoCoPhysicsEngine(PhysicsEngine):
+    """MuJoCo-based physics simulation."""
+    
+    def __init__(self):
+        self.model = None
+        self.data = None
+        self.model_loaded = False
+        self.fallback_reason = ""
+        self.loaded_model_name = ""
+    
+    def get_name(self) -> str:
+        return "mujoco"
+    
+    def initialize(self) -> None:
+        """Load MuJoCo model from app models directory."""
+        if not MUJOCO_AVAILABLE:
+            self.fallback_reason = "mujoco_package_unavailable"
+            return
+        
+        try:
+            model_dir = os.path.join(os.getcwd(), "app", "models")
+            candidate_paths = [
+                os.path.join(model_dir, "ur5e.xml"),
+                os.path.join(model_dir, "arm4_demo.xml"),
+            ]
+            for model_path in candidate_paths:
+                if os.path.exists(model_path):
+                    self.model = mj.MjModel.from_xml_path(model_path)
+                    self.data = mj.MjData(self.model)
+                    self.model_loaded = True
+                    self.loaded_model_name = os.path.basename(model_path)
+                    break
+
+            if not self.model_loaded:
+                self.fallback_reason = "mujoco_model_missing"
+        except Exception:
+            self.fallback_reason = "mujoco_model_load_failed"
+
+    def _apply_joint_state(self, joints: list[float]) -> None:
+        if not self.model or not self.data:
+            return
+        qn = min(len(joints), self.model.nq)
+        vn = min(len(joints), self.model.nv)
+        for i in range(qn):
+            self.data.qpos[i] = joints[i]
+        for i in range(vn):
+            self.data.qvel[i] = 0.0
+    
+    def step(self, joints: list[float], target: list[float], steps: int) -> list[list[float]]:
+        """
+        If MuJoCo model is available, simulate motion; otherwise fall back to linear interpolation.
+        """
+        if not self.model or not self.data:
+            # Fallback to lightweight if model unavailable
+            engine = LightweightPhysicsEngine()
+            return engine.step(joints, target, steps)
+        
+        ctrl_n = min(self.model.nu, len(target))
+        qn = min(self.model.nq, len(target))
+        if ctrl_n <= 0 or qn <= 0:
+            self.fallback_reason = "mujoco_invalid_model_dof"
+            engine = LightweightPhysicsEngine()
+            return engine.step(joints, target, steps)
+
+        self._apply_joint_state(joints)
+
+        for i in range(ctrl_n):
+            self.data.ctrl[i] = target[i]
+
+        outer_steps = max(1, steps)
+        # In MuJoCo mode we run a longer physical horizon to make inertia clearly visible.
+        dt = float(self.model.opt.timestep)
+        horizon_sec = max(0.45, outer_steps * 0.055)
+        total_substeps = max(outer_steps, int(horizon_sec / max(1e-4, dt)))
+        sample_every = max(1, total_substeps // outer_steps)
+        waypoints: list[list[float]] = []
+        for i in range(total_substeps):
+            mj.mj_step(self.model, self.data)
+            if (i + 1) % sample_every == 0:
+                waypoint = [float(self.data.qpos[iq]) for iq in range(qn)]
+                if qn < 4:
+                    waypoint.extend([0.0] * (4 - qn))
+                waypoints.append(waypoint[:4])
+
+        if not waypoints:
+            waypoint = [float(self.data.qpos[iq]) for iq in range(qn)]
+            if qn < 4:
+                waypoint.extend([0.0] * (4 - qn))
+            waypoints.append(waypoint[:4])
+
+        if len(waypoints) > outer_steps:
+            waypoints = waypoints[-outer_steps:]
+        elif len(waypoints) < outer_steps:
+            last = waypoints[-1]
+            waypoints.extend([last.copy() for _ in range(outer_steps - len(waypoints))])
+
+        return waypoints
+
+    def metrics(self, target_positions: list[float] | None = None) -> dict:
+        if not self.model or not self.data:
+            return {
+                "tracking_error_rad": 0.0,
+                "qvel_norm": 0.0,
+            }
+
+        nq = min(self.model.nq, 4)
+        nv = min(self.model.nv, 4)
+        qpos = [float(self.data.qpos[i]) for i in range(nq)]
+        qvel = [float(self.data.qvel[i]) for i in range(nv)]
+        qvel_norm = math.sqrt(sum(v * v for v in qvel))
+
+        tracking_error = 0.0
+        if target_positions:
+            m = min(len(target_positions), len(qpos))
+            if m > 0:
+                tracking_error = math.sqrt(
+                    sum((qpos[i] - float(target_positions[i])) ** 2 for i in range(m)) / m
+                )
+
+        return {
+            "tracking_error_rad": round(tracking_error, 4),
+            "qvel_norm": round(qvel_norm, 4),
+        }
+
+    def runtime_status(self) -> dict:
+        using_internal_fallback = not self.model_loaded
+        return {
+            "active": self.get_name(),
+            "using_internal_fallback": using_internal_fallback,
+            "model_loaded": self.model_loaded,
+            "fallback_reason": self.fallback_reason,
+            "model_name": self.loaded_model_name,
+        }
+
+
+def get_physics_engine() -> PhysicsEngine:
+    """Factory function to select the appropriate physics engine."""
+    if PHYSICS_ENGINE == "mujoco" and MUJOCO_AVAILABLE:
+        engine = MuJoCoPhysicsEngine()
+        engine.initialize()
+        return engine
+    else:
+        if PHYSICS_ENGINE == "mujoco" and not MUJOCO_AVAILABLE:
+            print("⚠️  MuJoCo requested but not available. Falling back to lightweight mode.")
+        return LightweightPhysicsEngine()
+
 
 
 def clamp_joint_rad(value: float) -> float:
@@ -101,11 +323,17 @@ async def ws_telemetry(websocket: WebSocket) -> None:
     queue: list[QueuedCommand] = []
     motion_waypoints: list[list[float]] = []
     queue_seq = 0
+    
+    # Initialize physics engine
+    physics_engine = get_physics_engine()
+    print(f"✓ Physics engine initialized: {physics_engine.get_name()}")
+    physics_requested = PHYSICS_ENGINE
 
     cmd_total = 0
     cmd_dropped = 0
     delay_sum_ms = 0.0
     delay_samples = 0
+    latest_target_positions: list[float] | None = None
 
     def enqueue_control_command(
         message: dict,
@@ -212,7 +440,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                 network.queue_penalty_ms = max(0.0, float(payload.get("queue_penalty_ms", network.queue_penalty_ms)))
 
     async def command_processor() -> None:
-        nonlocal joints, delay_sum_ms, delay_samples
+        nonlocal joints, delay_sum_ms, delay_samples, latest_target_positions
         while True:
             if not queue:
                 await asyncio.sleep(0.005)
@@ -225,17 +453,13 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                 continue
 
             cmd = queue.pop(0)
+            latest_target_positions = cmd.target_positions
             start = motion_waypoints[-1] if motion_waypoints else joints.copy()
             steps = max(1, cmd.steps)
-            for i in range(1, steps + 1):
-                t = i / steps
-                waypoint = [
-                    (start[0] * (1 - t)) + (cmd.target_positions[0] * t),
-                    (start[1] * (1 - t)) + (cmd.target_positions[1] * t),
-                    (start[2] * (1 - t)) + (cmd.target_positions[2] * t),
-                    (start[3] * (1 - t)) + (cmd.target_positions[3] * t),
-                ]
-                motion_waypoints.append(waypoint)
+            
+            # Use physics engine to generate waypoints
+            waypoints = physics_engine.step(start, cmd.target_positions, steps)
+            motion_waypoints.extend(waypoints)
 
             delay_sum_ms += cmd.simulated_delay_ms
             delay_samples += 1
@@ -287,6 +511,11 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                     "simulation_status": {
                         "joint_positions": joints,
                     },
+                    "physics": {
+                        "requested": physics_requested,
+                        **physics_engine.runtime_status(),
+                        **physics_engine.metrics(latest_target_positions),
+                    },
                 }
             )
             telemetry_seq += 1
@@ -306,3 +535,4 @@ async def ws_telemetry(websocket: WebSocket) -> None:
         processor_task.cancel()
         motion_stepper_task.cancel()
         sender_task.cancel()
+        physics_engine.cleanup()

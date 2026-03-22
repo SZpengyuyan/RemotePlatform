@@ -350,7 +350,7 @@ export default function App() {
         const acked = ackCountRef.current;
         const calculatedLoss = sent > 0 ? (sent - acked) / sent : 0;
 
-        setTelemetry({
+        setTelemetry((prev) => ({
           seq: data.seq ?? 0,
           latencyMs: lastRttRef.current ?? data.network_stats?.avg_total_delay_ms ?? 0,
           jitterMs: jitterEwmaRef.current || data.network_config?.jitter_ms || 0,
@@ -358,7 +358,7 @@ export default function App() {
           bandwidthKbps: data.network_config?.bandwidth_kbps ?? 0,
           backendLossRate: data.network_stats?.observed_loss_rate ?? 0,
           queuePending: data.queue?.pending ?? 0,
-        });
+        }));
 
         const next = data.simulation_status?.joint_positions ?? [];
         if (next.length >= 4) setJoints([next[0], next[1], next[2], next[3]]);

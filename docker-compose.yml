@@ -2,8 +2,12 @@ services:
   backend:
     build:
       context: ./backend
+      args:
+        INSTALL_MUJOCO: ${INSTALL_MUJOCO:-false}
     container_name: remote-platform-backend
     restart: unless-stopped
+    environment:
+      - PHYSICS_ENGINE=${PHYSICS_ENGINE:-lightweight}
     ports:
       - "8000:8000"
 

@@ -149,6 +149,8 @@ export default function App() {
   const [joints, setJoints] = useState<number[]>(DEFAULT_JOINTS);
   const [activeProfile, setActiveProfile] = useState<string>(NETWORK_PROFILES[0].key);
   const [hasRobotModelAsset, setHasRobotModelAsset] = useState(false);
+  const [eeTarget, setEeTarget] = useState({ x: 0.0, y: 1.7, z: 1.6 });
+  const [eeWristPitchDeg, setEeWristPitchDeg] = useState(-25);
 
   const [telemetry, setTelemetry] = useState<Telemetry>({
     seq: 0,
@@ -167,7 +169,7 @@ export default function App() {
   }, []);
 
   const sendJoints = useCallback(
-    (nextJoints: number[]) => {
+    (nextJoints: number[], steps = 8) => {
       const clamped = nextJoints.map(clampRad);
       const cmdSeq = cmdSeqRef.current++;
       const ts = Date.now();
@@ -178,7 +180,28 @@ export default function App() {
         type: "robot_joint_control",
         cmd_seq: cmdSeq,
         client_timestamp: ts,
-        payload: { target_positions: [...clamped, 0, 0, 0], steps: 8 },
+        payload: { target_positions: [...clamped, 0, 0, 0], steps },
+      });
+    },
+    [send]
+  );
+
+  const sendEeTarget = useCallback(
+    (target: { x: number; y: number; z: number }, wristPitchDeg: number) => {
+      const cmdSeq = cmdSeqRef.current++;
+      const ts = Date.now();
+      pendingRef.current.set(cmdSeq, ts);
+      sentCountRef.current += 1;
+
+      send({
+        type: "robot_ee_control",
+        cmd_seq: cmdSeq,
+        client_timestamp: ts,
+        payload: {
+          target_ee: target,
+          wrist_pitch_deg: wristPitchDeg,
+          steps: 14,
+        },
       });
     },
     [send]
@@ -223,9 +246,15 @@ export default function App() {
   const grab = useCallback(() => setGrip((v) => Math.max(0.1, v - 0.2)), []);
   const release = useCallback(() => setGrip((v) => Math.min(1, v + 0.2)), []);
 
+  const applyEeControl = useCallback(() => {
+    sendEeTarget(eeTarget, eeWristPitchDeg);
+  }, [eeTarget, eeWristPitchDeg, sendEeTarget]);
+
   const reset = useCallback(() => {
     setJoints(DEFAULT_JOINTS);
     setGrip(0.7);
+    setEeTarget({ x: 0.0, y: 1.7, z: 1.6 });
+    setEeWristPitchDeg(-25);
     send({ type: "robot_reset", payload: { initial_positions: [0, 0, 0, 0, 0, 0, 0] } });
   }, [send]);
 
@@ -375,6 +404,46 @@ export default function App() {
                 <Button variant="outlined" color="success" onClick={moveBackward}>向后</Button>
                 <Button variant="contained" color="warning" onClick={grab}>抓取</Button>
                 <Button variant="outlined" color="warning" onClick={release}>松开</Button>
+
+                <Card variant="outlined" style={{ padding: 10 }}>
+                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>末端目标控制（IK）</p>
+                  <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>X: {eeTarget.x.toFixed(2)} m</p>
+                  <Slider
+                    min={-1.2}
+                    max={1.2}
+                    step={0.02}
+                    value={eeTarget.x}
+                    onChange={(_, v) => setEeTarget((prev) => ({ ...prev, x: v as number }))}
+                  />
+                  <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>Y: {eeTarget.y.toFixed(2)} m</p>
+                  <Slider
+                    min={0.6}
+                    max={2.4}
+                    step={0.02}
+                    value={eeTarget.y}
+                    onChange={(_, v) => setEeTarget((prev) => ({ ...prev, y: v as number }))}
+                  />
+                  <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>Z: {eeTarget.z.toFixed(2)} m</p>
+                  <Slider
+                    min={0.2}
+                    max={2.8}
+                    step={0.02}
+                    value={eeTarget.z}
+                    onChange={(_, v) => setEeTarget((prev) => ({ ...prev, z: v as number }))}
+                  />
+                  <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>腕部俯仰: {eeWristPitchDeg}°</p>
+                  <Slider
+                    min={-120}
+                    max={80}
+                    step={1}
+                    value={eeWristPitchDeg}
+                    onChange={(_, v) => setEeWristPitchDeg(v as number)}
+                  />
+                  <Button variant="contained" color="secondary" onClick={applyEeControl} fullWidth>
+                    发送末端目标
+                  </Button>
+                </Card>
+
                 <Button variant="text" color="error" onClick={reset}>复位</Button>
                 {NETWORK_PROFILES.map((profile) => (
                   <Button

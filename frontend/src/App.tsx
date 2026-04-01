@@ -1,7 +1,7 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, ErrorInfo, ReactNode, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, Grid, Slider } from "@mui/material";
 import { Canvas, useLoader } from "@react-three/fiber";
-import { ContactShadows, Environment, OrbitControls, PerspectiveCamera } from "@react-three/drei";
+import { ContactShadows, OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import { Box3, Group, Mesh, MeshStandardMaterial, Vector3 } from "three";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 
@@ -23,6 +23,35 @@ type NetworkProfile = {
   lossRate: number;
   bandwidthKbps: number;
 };
+
+type ModelErrorBoundaryProps = {
+  fallback: ReactNode;
+  onError?: () => void;
+  children: ReactNode;
+};
+
+type ModelErrorBoundaryState = {
+  hasError: boolean;
+};
+
+class ModelErrorBoundary extends Component<ModelErrorBoundaryProps, ModelErrorBoundaryState> {
+  state: ModelErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): ModelErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(_error: Error, _info: ErrorInfo): void {
+    this.props.onError?.();
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback;
+    }
+    return this.props.children;
+  }
+}
 
 const NETWORK_PROFILES: NetworkProfile[] = [
   { key: "good", label: "良好网络", delayMs: 25, jitterMs: 3, lossRate: 0.001, bandwidthKbps: 12000 },
@@ -288,6 +317,7 @@ export default function App() {
   const [joints, setJoints] = useState<number[]>(DEFAULT_JOINTS);
   const [activeProfile, setActiveProfile] = useState<string>(NETWORK_PROFILES[0].key);
   const [hasRobotModelAsset, setHasRobotModelAsset] = useState(false);
+  const [modelLoadFailed, setModelLoadFailed] = useState(false);
   const [eeTarget, setEeTarget] = useState({ x: 0.0, y: 1.7, z: 1.6 });
   const [eeWristPitchDeg, setEeWristPitchDeg] = useState(-25);
 
@@ -398,14 +428,20 @@ export default function App() {
 
     const checkModelAsset = async () => {
       try {
-        const response = await fetch(`${UR5E_OBJ_BASE}/base_0.obj`, { cache: "no-store" });
+        // Validate all required OBJ files before enabling real-model path.
+        const checks = await Promise.all(
+          UR5E_OBJ_FILES.map((file) => fetch(`${UR5E_OBJ_BASE}/${file}`, { cache: "no-store" }))
+        );
+        const response = checks[0];
         const text = await response.text();
         if (!disposed) {
-          setHasRobotModelAsset(response.ok && isLikelyObj(text));
+          setHasRobotModelAsset(checks.every((item) => item.ok) && isLikelyObj(text));
+          setModelLoadFailed(false);
         }
       } catch {
         if (!disposed) {
           setHasRobotModelAsset(false);
+          setModelLoadFailed(false);
         }
       }
     };
@@ -595,7 +631,11 @@ export default function App() {
             <Card style={{ padding: 16, height: "100%" }}>
               <h3 style={{ marginTop: 0 }}>3D机械臂</h3>
               <p style={{ marginTop: -6, marginBottom: 10, color: "#475569", fontSize: 12 }}>
-                {hasRobotModelAsset ? "已加载真实模型资产（ur5e OBJ）" : "未检测到模型资产，使用内置几何机械臂"}
+                {hasRobotModelAsset
+                  ? modelLoadFailed
+                    ? "真实模型加载失败，已回退内置几何机械臂"
+                    : "已加载真实模型资产（ur5e OBJ）"
+                  : "未检测到模型资产，使用内置几何机械臂"}
               </p>
               <div style={{ height: 420, borderRadius: 12, overflow: "hidden", background: "#dbeafe" }}>
                 <Canvas
@@ -626,17 +666,17 @@ export default function App() {
                     color="#dbeafe"
                   />
                   <pointLight intensity={0.5} position={[2.2, 2.1, -2.8]} color="#bfdbfe" />
-                  <Environment preset="city" />
-
                   <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
                     <planeGeometry args={[12, 12]} />
                     <meshStandardMaterial color="#d6deea" roughness={0.78} metalness={0.08} />
                   </mesh>
 
                   {hasRobotModelAsset ? (
-                    <Suspense fallback={null}>
-                      <RobotModelAsset joints={joints} />
-                    </Suspense>
+                    <ModelErrorBoundary fallback={<Arm3D joints={joints} grip={0.7} />} onError={() => setModelLoadFailed(true)}>
+                      <Suspense fallback={<Arm3D joints={joints} grip={0.7} />}>
+                        <RobotModelAsset joints={joints} />
+                      </Suspense>
+                    </ModelErrorBoundary>
                   ) : (
                     <Arm3D joints={joints} grip={0.7} />
                   )}

@@ -95,14 +95,6 @@ function wsUrl(): string {
   return `${protocol}://${host}:8000/ws`;
 }
 
-function clampRad(value: number): number {
-  return Math.max(-2.6, Math.min(2.6, value));
-}
-
-function degToRad(value: number): number {
-  return (value * Math.PI) / 180;
-}
-
 function metricColor(value: number, warn: number, danger: number, inverse = false): string {
   if (inverse) {
     if (value <= warn) return "#166534";
@@ -310,6 +302,7 @@ function RobotModelAsset({ joints, onReady }: { joints: number[]; onReady?: () =
 export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const cmdSeqRef = useRef(1);
+  const commandedJointsRef = useRef<number[]>(DEFAULT_JOINTS);
   const pendingRef = useRef<Map<number, number>>(new Map());
   const sentCountRef = useRef(0);
   const ackCountRef = useRef(0);
@@ -317,7 +310,6 @@ export default function App() {
   const jitterEwmaRef = useRef(0);
 
   const [connected, setConnected] = useState("未连接");
-  const [stepDeg, setStepDeg] = useState(5);
   const [joints, setJoints] = useState<number[]>(DEFAULT_JOINTS);
   const [activeProfile, setActiveProfile] = useState<string>(NETWORK_PROFILES[0].key);
   const [hasRobotModelAsset, setHasRobotModelAsset] = useState(false);
@@ -341,24 +333,6 @@ export default function App() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify(payload));
   }, []);
-
-  const sendJoints = useCallback(
-    (nextJoints: number[], steps = 8) => {
-      const clamped = nextJoints.map(clampRad);
-      const cmdSeq = cmdSeqRef.current++;
-      const ts = Date.now();
-      pendingRef.current.set(cmdSeq, ts);
-      sentCountRef.current += 1;
-
-      send({
-        type: "robot_joint_control",
-        cmd_seq: cmdSeq,
-        client_timestamp: ts,
-        payload: { target_positions: [...clamped, 0, 0, 0], steps },
-      });
-    },
-    [send]
-  );
 
   const sendEeTarget = useCallback(
     (target: { x: number; y: number; z: number }, wristPitchDeg: number) => {
@@ -398,31 +372,13 @@ export default function App() {
     [send]
   );
 
-  const updateJoint0 = useCallback(
-    (deltaDeg: number) => {
-      const next = [...joints];
-      next[0] = (next[0] ?? 0) + degToRad(deltaDeg);
-      sendJoints(next);
-    },
-    [joints, sendJoints]
-  );
-
-  const moveForward = useCallback(() => {
-    const step = degToRad(stepDeg);
-    sendJoints([(joints[0] ?? 0), (joints[1] ?? 0) - step, (joints[2] ?? 0) + step, (joints[3] ?? 0)]);
-  }, [joints, sendJoints, stepDeg]);
-
-  const moveBackward = useCallback(() => {
-    const step = degToRad(stepDeg);
-    sendJoints([(joints[0] ?? 0), (joints[1] ?? 0) + step, (joints[2] ?? 0) - step, (joints[3] ?? 0)]);
-  }, [joints, sendJoints, stepDeg]);
-
   const applyEeControl = useCallback(() => {
     sendEeTarget(eeTarget, eeWristPitchDeg);
   }, [eeTarget, eeWristPitchDeg, sendEeTarget]);
 
   const reset = useCallback(() => {
     setJoints(DEFAULT_JOINTS);
+    commandedJointsRef.current = [...DEFAULT_JOINTS];
     setEeTarget({ x: 0.0, y: 1.7, z: 1.6 });
     setEeWristPitchDeg(-25);
     send({ type: "robot_reset", payload: { initial_positions: [0, 0, 0, 0, 0, 0, 0] } });
@@ -548,7 +504,11 @@ export default function App() {
         });
 
         const next = data.simulation_status?.joint_positions ?? [];
-        if (next.length >= 4) setJoints([next[0], next[1], next[2], next[3]]);
+        if (next.length >= 4) {
+          const synced = [next[0], next[1], next[2], next[3]];
+          setJoints(synced);
+          commandedJointsRef.current = synced;
+        }
       };
     };
 
@@ -582,14 +542,7 @@ export default function App() {
           <Grid item xs={12} md={3}>
             <Card style={{ padding: 16, height: "100%" }}>
               <h3 style={{ marginTop: 0 }}>控制按钮</h3>
-              <p style={{ marginBottom: 10 }}>步进角度：{stepDeg}°</p>
-              <Slider min={1} max={20} step={1} value={stepDeg} onChange={(_, v) => setStepDeg(v as number)} />
               <div style={{ display: "grid", gap: 10 }}>
-                <Button variant="contained" onClick={() => updateJoint0(stepDeg)}>关节1 +{stepDeg}°</Button>
-                <Button variant="contained" onClick={() => updateJoint0(-stepDeg)}>关节1 -{stepDeg}°</Button>
-                <Button variant="contained" color="success" onClick={moveForward}>向前</Button>
-                <Button variant="outlined" color="success" onClick={moveBackward}>向后</Button>
-
                 <Card variant="outlined" style={{ padding: 10 }}>
                   <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>末端目标控制（IK）</p>
                   <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>X: {eeTarget.x.toFixed(2)} m</p>

@@ -177,7 +177,7 @@ function Arm3D({ joints, grip }: { joints: number[]; grip: number }) {
   );
 }
 
-function RobotModelAsset({ joints }: { joints: number[] }) {
+function RobotModelAsset({ joints, onReady }: { joints: number[]; onReady?: () => void }) {
   const loadedObjects = useLoader(
     OBJLoader,
     UR5E_OBJ_FILES.map((file) => `${UR5E_OBJ_BASE}/${file}`)
@@ -236,6 +236,10 @@ function RobotModelAsset({ joints }: { joints: number[] }) {
 
     return map;
   }, [loadedObjects, materialPalette]);
+
+  useEffect(() => {
+    onReady?.();
+  }, [onReady, preparedParts]);
 
   const modelRootRef = useRef<Group | null>(null);
   const [offset, setOffset] = useState<[number, number, number]>([0, 0, 0]);
@@ -318,6 +322,7 @@ export default function App() {
   const [activeProfile, setActiveProfile] = useState<string>(NETWORK_PROFILES[0].key);
   const [hasRobotModelAsset, setHasRobotModelAsset] = useState(false);
   const [modelLoadFailed, setModelLoadFailed] = useState(false);
+  const [modelReady, setModelReady] = useState(false);
   const [eeTarget, setEeTarget] = useState({ x: 0.0, y: 1.7, z: 1.6 });
   const [eeWristPitchDeg, setEeWristPitchDeg] = useState(-25);
 
@@ -452,6 +457,17 @@ export default function App() {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasRobotModelAsset || modelReady || modelLoadFailed) return;
+
+    // Prevent endless heavy loading from destabilizing the page on weaker GPUs.
+    const timer = setTimeout(() => {
+      setModelLoadFailed(true);
+    }, 12000);
+
+    return () => clearTimeout(timer);
+  }, [hasRobotModelAsset, modelReady, modelLoadFailed]);
 
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -633,7 +649,7 @@ export default function App() {
               <p style={{ marginTop: -6, marginBottom: 10, color: "#475569", fontSize: 12 }}>
                 {hasRobotModelAsset
                   ? modelLoadFailed
-                    ? "真实模型加载失败，已回退内置几何机械臂"
+                    ? "真实模型加载超时或失败，已回退内置几何机械臂"
                     : "已加载真实模型资产（ur5e OBJ）"
                   : "未检测到模型资产，使用内置几何机械臂"}
               </p>
@@ -641,7 +657,7 @@ export default function App() {
                 <Canvas
                   shadows
                   gl={{ antialias: true, powerPreference: "high-performance" }}
-                  dpr={[1, 1.8]}
+                  dpr={[1, 1.35]}
                 >
                   <PerspectiveCamera makeDefault position={[3.8, 2.55, 4.4]} fov={48} />
                   <color attach="background" args={["#dbeafe"]} />
@@ -653,8 +669,8 @@ export default function App() {
                     castShadow
                     intensity={1.5}
                     position={[5.5, 7.5, 4.5]}
-                    shadow-mapSize-width={2048}
-                    shadow-mapSize-height={2048}
+                    shadow-mapSize-width={1024}
+                    shadow-mapSize-height={1024}
                     shadow-bias={-0.00008}
                   />
                   <spotLight
@@ -674,7 +690,7 @@ export default function App() {
                   {hasRobotModelAsset ? (
                     <ModelErrorBoundary fallback={<Arm3D joints={joints} grip={0.7} />} onError={() => setModelLoadFailed(true)}>
                       <Suspense fallback={<Arm3D joints={joints} grip={0.7} />}>
-                        <RobotModelAsset joints={joints} />
+                        <RobotModelAsset joints={joints} onReady={() => setModelReady(true)} />
                       </Suspense>
                     </ModelErrorBoundary>
                   ) : (

@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+**/node_modules/
+frontend/dist/
+
+# Build caches
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db

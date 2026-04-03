@@ -126,10 +126,11 @@ docker compose up
 ### 1. 先部署后端（以 Render 为例）
 
 1. 在 Render 创建一个 Web Service，代码目录选择 `backend`。
-2. Build Command：`pip install -r requirements.txt`
-3. Start Command：`uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-4. 环境变量：`PHYSICS_ENGINE=lightweight`
-5. 部署完成后记录后端域名，例如：`https://your-backend.onrender.com`
+2. Python Version 选择 `3.11`（不要用 3.14）。
+3. Build Command：`pip install -r requirements.txt`
+4. Start Command：`uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+5. 环境变量：`PHYSICS_ENGINE=lightweight`
+6. 部署完成后记录后端域名，例如：`https://your-backend.onrender.com`
 
 检查：
 

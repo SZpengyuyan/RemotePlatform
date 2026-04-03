@@ -431,13 +431,6 @@ export default function App() {
 
   useEffect(() => {
     if (!hasRobotModelAsset || modelReady || modelLoadFailed) return;
-
-    // Prevent endless heavy loading from destabilizing the page on weaker GPUs.
-    const timer = setTimeout(() => {
-      setModelLoadFailed(true);
-    }, 12000);
-
-    return () => clearTimeout(timer);
   }, [hasRobotModelAsset, modelReady, modelLoadFailed]);
 
   useEffect(() => {
@@ -617,7 +610,7 @@ export default function App() {
               <p style={{ marginTop: -6, marginBottom: 10, color: "#475569", fontSize: 12 }}>
                 {hasRobotModelAsset
                   ? modelLoadFailed
-                    ? "真实模型加载超时或失败，已回退内置几何机械臂"
+                    ? "真实模型加载失败，已回退内置几何机械臂"
                     : "已加载真实模型资产（ur5e OBJ）"
                   : "未检测到模型资产，使用内置几何机械臂"}
               </p>

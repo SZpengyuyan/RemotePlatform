@@ -90,6 +90,21 @@ function isLikelyObj(content: string): boolean {
 }
 
 function wsUrl(): string {
+  const explicitWs = import.meta.env.VITE_BACKEND_WS_URL as string | undefined;
+  if (explicitWs && explicitWs.trim()) {
+    return explicitWs.trim();
+  }
+
+  const backendHttp = import.meta.env.VITE_BACKEND_HTTP_URL as string | undefined;
+  if (backendHttp && backendHttp.trim()) {
+    const url = new URL(backendHttp.trim());
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = "/ws";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
   const host = window.location.hostname || "localhost";
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   return `${protocol}://${host}:8000/ws`;

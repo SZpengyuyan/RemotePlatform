@@ -117,6 +117,65 @@ docker compose up
 - 确认在同一个终端窗口中执行设置与启动命令。
 - 重新开一个终端窗口并重新设置环境变量后再启动。
 
+## Vercel 免费部署（推荐方案）
+
+本项目建议采用“前端 Vercel + 后端其它免费平台（Render/Railway/Fly.io）”的方式部署。
+
+原因：后端依赖 WebSocket 长连接（可选 MuJoCo），不适合直接部署到 Vercel 的无状态函数模式。
+
+### 1. 先部署后端（以 Render 为例）
+
+1. 在 Render 创建一个 Web Service，代码目录选择 `backend`。
+2. Build Command：`pip install -r requirements.txt`
+3. Start Command：`uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+4. 环境变量：`PHYSICS_ENGINE=lightweight`
+5. 部署完成后记录后端域名，例如：`https://your-backend.onrender.com`
+
+检查：
+
+- `https://your-backend.onrender.com/health` 应可访问。
+- WebSocket 地址为：`wss://your-backend.onrender.com/ws`
+
+### 2. 部署前端到 Vercel
+
+方式 A（推荐，网页操作）：
+
+1. 在 Vercel 导入仓库。
+2. Root Directory 选择 `frontend`。
+3. Framework Preset 选择 Vite（一般可自动识别）。
+4. Build Command：`npm run build`
+5. Output Directory：`dist`
+6. Environment Variables 添加：
+	 - `VITE_BACKEND_HTTP_URL=https://your-backend.onrender.com`
+	 - 或 `VITE_BACKEND_WS_URL=wss://your-backend.onrender.com/ws`
+7. 点击 Deploy。
+
+方式 B（CLI，一条命令起步）：
+
+```bash
+vercel --cwd frontend
+```
+
+生产部署：
+
+```bash
+vercel --prod --cwd frontend
+```
+
+### 3. 验证联通
+
+1. 打开 Vercel 前端地址。
+2. 页面连接状态应从“未连接”切换为“已连接”。
+3. 切换网络场景并发送机械臂控制指令，观察 telemetry 是否变化。
+
+### 4. 关键说明
+
+- 前端已支持通过环境变量配置后端地址：
+	- `VITE_BACKEND_HTTP_URL`（推荐，自动转换到 ws/wss）
+	- `VITE_BACKEND_WS_URL`（直接指定完整 websocket 地址）
+- 若两者都设置，优先使用 `VITE_BACKEND_WS_URL`。
+- 若都不设置，前端默认连接当前域名的 `:8000/ws`（本地 Docker 场景）。
+
 ## 详细文档
 
 完整架构、模块职责、当前项目进度与验证方法见：项目最精简架构与启动说明.md

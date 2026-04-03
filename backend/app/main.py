@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
+import io
 import math
 import os
 import random
+import struct
 import time
+from collections import deque
 from dataclasses import dataclass
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 # Physics engine selection
@@ -33,6 +37,8 @@ app.add_middleware(
 )
 
 DEFAULT_JOINTS = [0.3, -0.5, 0.7, 0.2]
+EXPERIMENT_HISTORY_MAXLEN = 5000
+EXPERIMENT_HISTORY: deque[dict] = deque(maxlen=EXPERIMENT_HISTORY_MAXLEN)
 
 
 # Physics Engine Abstraction
@@ -298,6 +304,13 @@ class SimNetwork:
 
 
 @dataclass
+class SimWireless:
+    mode: str = "basic_awgn"
+    ebno_db: float = 10.0
+    force_sensor_enabled: bool = False
+
+
+@dataclass
 class QueuedCommand:
     apply_ts: float
     seq: int
@@ -308,9 +321,108 @@ class QueuedCommand:
     simulated_delay_ms: float
 
 
+def simulate_wireless_transmission(
+    target_positions: list[float],
+    mode: str,
+    ebno_db: float,
+) -> tuple[list[float], float, float, float]:
+    """Return transmitted target, BER, processing delay(ms), and mean abs trajectory error."""
+    safe_mode = mode if mode in ("basic_awgn", "advanced_cdl_ofdm") else "basic_awgn"
+    ebno = max(-2.0, min(30.0, float(ebno_db)))
+    snr_linear = 10 ** (ebno / 10.0)
+
+    # Approximate uncoded BER baseline (BPSK-like), then apply mode-specific coding gain.
+    raw_ber = 0.5 * math.erfc(math.sqrt(max(snr_linear, 1e-9)))
+    if safe_mode == "advanced_cdl_ofdm":
+        bit_flip_prob = max(0.00001, min(0.2, raw_ber * 0.35 + 0.00005))
+        processing_delay_ms = random.uniform(10.0, 18.0) + max(0.0, (12.0 - ebno) * 0.7)
+    else:
+        bit_flip_prob = max(0.00002, min(0.25, raw_ber * 0.85 + 0.0002))
+        processing_delay_ms = random.uniform(4.0, 10.0) + max(0.0, (10.0 - ebno) * 0.5)
+
+    # Encode 4 joint angles as float32 bitstream (128 bits total).
+    bits: list[int] = []
+    for value in target_positions:
+        packed = struct.pack("!f", float(value))
+        as_int = int.from_bytes(packed, byteorder="big", signed=False)
+        for shift in range(31, -1, -1):
+            bits.append((as_int >> shift) & 1)
+
+    if not bits:
+        return [], bit_flip_prob, processing_delay_ms, 0.0
+
+    bits_hat: list[int] = []
+    error_bits = 0
+    for b in bits:
+        flipped = b
+        if random.random() < bit_flip_prob:
+            flipped = 1 - b
+            error_bits += 1
+        bits_hat.append(flipped)
+
+    # Decode bitstream back to float32 joint angles.
+    transmitted: list[float] = []
+    for idx in range(0, len(bits_hat), 32):
+        chunk = bits_hat[idx:idx + 32]
+        if len(chunk) < 32:
+            break
+        as_int = 0
+        for bit in chunk:
+            as_int = (as_int << 1) | bit
+        raw = as_int.to_bytes(4, byteorder="big", signed=False)
+        decoded = struct.unpack("!f", raw)[0]
+        if not math.isfinite(decoded):
+            decoded = 0.0
+        transmitted.append(clamp_joint_rad(float(decoded)))
+
+    if len(transmitted) < len(target_positions):
+        transmitted.extend(float(v) for v in target_positions[len(transmitted):])
+
+    ber = error_bits / len(bits)
+    trajectory_error_mean = sum(abs(transmitted[i] - float(target_positions[i])) for i in range(len(target_positions))) / len(target_positions)
+    return transmitted, ber, processing_delay_ms, trajectory_error_mean
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/v1/experiments/export/csv")
+async def export_experiment_csv() -> Response:
+    """Export recent telemetry samples as CSV for experiment analysis."""
+    fieldnames = [
+        "sample_ts",
+        "seq",
+        "average_ber",
+        "last_ber",
+        "wireless_delay_ms",
+        "total_wireless_delay_ms",
+        "trajectory_error_mean",
+        "transmission_count",
+        "total_run_time_s",
+        "queue_pending",
+        "wireless_mode",
+        "ebno_db",
+        "physics_mode",
+        "force_sensor_enabled",
+        "active_joint_1",
+        "active_joint_2",
+        "active_joint_3",
+        "active_joint_4",
+    ]
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in list(EXPERIMENT_HISTORY):
+        writer.writerow(row)
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=experiment_metrics.csv"},
+    )
 
 
 @app.websocket("/ws")
@@ -320,9 +432,11 @@ async def ws_telemetry(websocket: WebSocket) -> None:
     joints = DEFAULT_JOINTS.copy()
     telemetry_seq = 0
     network = SimNetwork()
+    wireless = SimWireless()
     queue: list[QueuedCommand] = []
     motion_waypoints: list[list[float]] = []
     queue_seq = 0
+    run_start_ts = time.time()
     
     # Initialize physics engine
     physics_engine = get_physics_engine()
@@ -334,6 +448,13 @@ async def ws_telemetry(websocket: WebSocket) -> None:
     delay_sum_ms = 0.0
     delay_samples = 0
     latest_target_positions: list[float] | None = None
+    wireless_transmissions = 0
+    ber_sum = 0.0
+    last_ber = 0.0
+    total_wireless_delay_ms = 0.0
+    last_wireless_delay_ms = 0.0
+    trajectory_error_sum = 0.0
+    last_trajectory_error_mean = 0.0
 
     def enqueue_control_command(
         message: dict,
@@ -439,8 +560,17 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                 network.bandwidth_kbps = max(64.0, float(payload.get("bandwidth_kbps", network.bandwidth_kbps)))
                 network.queue_penalty_ms = max(0.0, float(payload.get("queue_penalty_ms", network.queue_penalty_ms)))
 
+            if msg_type == "wireless_config":
+                requested_mode = str(payload.get("mode", wireless.mode))
+                wireless.mode = requested_mode if requested_mode in ("basic_awgn", "advanced_cdl_ofdm") else "basic_awgn"
+                wireless.ebno_db = max(-2.0, min(30.0, float(payload.get("ebno_db", wireless.ebno_db))))
+                wireless.force_sensor_enabled = bool(payload.get("force_sensor_enabled", wireless.force_sensor_enabled))
+
     async def command_processor() -> None:
         nonlocal joints, delay_sum_ms, delay_samples, latest_target_positions
+        nonlocal wireless_transmissions, ber_sum, last_ber
+        nonlocal total_wireless_delay_ms, last_wireless_delay_ms
+        nonlocal trajectory_error_sum, last_trajectory_error_mean
         while True:
             if not queue:
                 await asyncio.sleep(0.005)
@@ -453,16 +583,28 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                 continue
 
             cmd = queue.pop(0)
-            latest_target_positions = cmd.target_positions
+            transmitted_target, ber, wireless_delay_ms, trajectory_error_mean = simulate_wireless_transmission(
+                target_positions=cmd.target_positions,
+                mode=wireless.mode,
+                ebno_db=wireless.ebno_db,
+            )
+            latest_target_positions = transmitted_target
             start = motion_waypoints[-1] if motion_waypoints else joints.copy()
             steps = max(1, cmd.steps)
             
             # Use physics engine to generate waypoints
-            waypoints = physics_engine.step(start, cmd.target_positions, steps)
+            waypoints = physics_engine.step(start, transmitted_target, steps)
             motion_waypoints.extend(waypoints)
 
             delay_sum_ms += cmd.simulated_delay_ms
             delay_samples += 1
+            wireless_transmissions += 1
+            ber_sum += ber
+            last_ber = ber
+            total_wireless_delay_ms += wireless_delay_ms
+            last_wireless_delay_ms = wireless_delay_ms
+            trajectory_error_sum += trajectory_error_mean
+            last_trajectory_error_mean = trajectory_error_mean
 
             await websocket.send_json(
                 {
@@ -472,6 +614,11 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                     "server_recv_ts": cmd.apply_ts - cmd.simulated_delay_ms / 1000.0,
                     "server_apply_ts": time.time(),
                     "simulated_delay_ms": round(cmd.simulated_delay_ms, 2),
+                    "ber": round(ber, 6),
+                    "wireless_delay_ms": round(wireless_delay_ms, 2),
+                    "trajectory_error_mean": round(trajectory_error_mean, 5),
+                    "wireless_mode": wireless.mode,
+                    "ebno_db": round(wireless.ebno_db, 2),
                     "trajectory_steps": steps,
                 }
             )
@@ -488,21 +635,37 @@ async def ws_telemetry(websocket: WebSocket) -> None:
         while True:
             observed_loss = (cmd_dropped / cmd_total) if cmd_total > 0 else 0.0
             avg_delay = (delay_sum_ms / delay_samples) if delay_samples > 0 else 0.0
+            average_ber = (ber_sum / wireless_transmissions) if wireless_transmissions > 0 else 0.0
+            trajectory_error_mean = (trajectory_error_sum / wireless_transmissions) if wireless_transmissions > 0 else 0.0
+            total_run_time_s = time.time() - run_start_ts
 
             await websocket.send_json(
                 {
                     "type": "telemetry",
                     "seq": telemetry_seq,
                     "server_ts": time.time(),
-                    "network_stats": {
+                    "wireless_stats": {
+                        "average_ber": round(average_ber, 6),
+                        "last_ber": round(last_ber, 6),
+                        "wireless_delay_ms": round(last_wireless_delay_ms, 2),
+                        "total_wireless_delay_ms": round(total_wireless_delay_ms, 2),
+                        "trajectory_error_mean": round(trajectory_error_mean, 5),
+                        "last_trajectory_error_mean": round(last_trajectory_error_mean, 5),
+                        "transmission_count": wireless_transmissions,
+                    },
+                    "experiment_config": {
+                        "wireless_mode": wireless.mode,
+                        "ebno_db": round(wireless.ebno_db, 2),
+                        "physics_mode": physics_engine.get_name(),
+                        "force_sensor_enabled": wireless.force_sensor_enabled,
+                    },
+                    "runtime_stats": {
+                        "total_run_time_s": round(total_run_time_s, 2),
+                        "queue_pending": len(queue),
+                    },
+                    "legacy_network_stats": {
                         "avg_total_delay_ms": round(avg_delay, 2),
                         "observed_loss_rate": round(observed_loss, 4),
-                    },
-                    "network_config": {
-                        "delay_ms": round(network.delay_ms, 2),
-                        "jitter_ms": round(network.jitter_ms, 2),
-                        "loss_rate": round(network.loss_rate, 4),
-                        "bandwidth_kbps": round(network.bandwidth_kbps, 1),
                     },
                     "queue": {
                         "pending": len(queue),
@@ -516,6 +679,30 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                         **physics_engine.runtime_status(),
                         **physics_engine.metrics(latest_target_positions),
                     },
+                }
+            )
+
+            active_joints = joints[:4] + [0.0] * max(0, 4 - len(joints))
+            EXPERIMENT_HISTORY.append(
+                {
+                    "sample_ts": round(time.time(), 6),
+                    "seq": telemetry_seq,
+                    "average_ber": round(average_ber, 6),
+                    "last_ber": round(last_ber, 6),
+                    "wireless_delay_ms": round(last_wireless_delay_ms, 2),
+                    "total_wireless_delay_ms": round(total_wireless_delay_ms, 2),
+                    "trajectory_error_mean": round(trajectory_error_mean, 6),
+                    "transmission_count": wireless_transmissions,
+                    "total_run_time_s": round(total_run_time_s, 2),
+                    "queue_pending": len(queue),
+                    "wireless_mode": wireless.mode,
+                    "ebno_db": round(wireless.ebno_db, 2),
+                    "physics_mode": physics_engine.get_name(),
+                    "force_sensor_enabled": wireless.force_sensor_enabled,
+                    "active_joint_1": round(float(active_joints[0]), 6),
+                    "active_joint_2": round(float(active_joints[1]), 6),
+                    "active_joint_3": round(float(active_joints[2]), 6),
+                    "active_joint_4": round(float(active_joints[3]), 6),
                 }
             )
             telemetry_seq += 1

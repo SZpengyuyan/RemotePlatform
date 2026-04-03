@@ -7,21 +7,24 @@ import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 
 type Telemetry = {
   seq: number;
-  latencyMs: number;
-  jitterMs: number;
-  lossRate: number;
-  bandwidthKbps: number;
-  backendLossRate: number;
+  averageBer: number;
+  lastBer: number;
+  wirelessDelayMs: number;
+  totalWirelessDelayMs: number;
+  trajectoryErrorMean: number;
+  transmissionCount: number;
+  totalRunTimeS: number;
+  wirelessMode: string;
+  ebnoDb: number;
+  physicsMode: string;
   queuePending: number;
 };
 
-type NetworkProfile = {
+type WirelessProfile = {
   key: string;
   label: string;
-  delayMs: number;
-  jitterMs: number;
-  lossRate: number;
-  bandwidthKbps: number;
+  mode: "basic_awgn" | "advanced_cdl_ofdm";
+  ebnoDb: number;
 };
 
 type ModelErrorBoundaryProps = {
@@ -53,13 +56,20 @@ class ModelErrorBoundary extends Component<ModelErrorBoundaryProps, ModelErrorBo
   }
 }
 
-const NETWORK_PROFILES: NetworkProfile[] = [
-  { key: "good", label: "良好网络", delayMs: 25, jitterMs: 3, lossRate: 0.001, bandwidthKbps: 12000 },
-  { key: "mid", label: "中等拥塞", delayMs: 700, jitterMs: 220, lossRate: 0.12, bandwidthKbps: 320 },
-  { key: "bad", label: "恶劣网络", delayMs: 2250, jitterMs: 750, lossRate: 0.45, bandwidthKbps: 64 },
+const WIRELESS_PROFILES: WirelessProfile[] = [
+  { key: "good", label: "低噪声-Basic", mode: "basic_awgn", ebnoDb: 12 },
+  { key: "mid", label: "中噪声-Basic", mode: "basic_awgn", ebnoDb: 7 },
+  { key: "bad", label: "高噪声-Advanced", mode: "advanced_cdl_ofdm", ebnoDb: 3 },
 ];
 
 const DEFAULT_JOINTS = [0.3, -0.5, 0.7, 0.2];
+const JOINT_PRESETS = [
+  { key: "home", label: "回到初始位姿", joints: [0.3, -0.5, 0.7, 0.2] },
+  { key: "left", label: "向左摆", joints: [1.0, -0.3, 0.5, 0.0] },
+  { key: "right", label: "向右摆", joints: [-1.0, -0.3, 0.5, 0.0] },
+  { key: "lift", label: "抬起手臂", joints: [0.2, 0.15, -0.2, -0.25] },
+  { key: "reach", label: "向前伸展", joints: [0.0, -0.9, 1.1, 0.15] },
+] as Array<{ key: string; label: string; joints: number[] }>;
 const UR5E_OBJ_BASE = "/assets/robot/ur5e_obj";
 const UR5E_OBJ_FILES = [
   "base_0.obj",
@@ -317,29 +327,36 @@ function RobotModelAsset({ joints, onReady }: { joints: number[]; onReady?: () =
 export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const cmdSeqRef = useRef(1);
-  const commandedJointsRef = useRef<number[]>(DEFAULT_JOINTS);
-  const pendingRef = useRef<Map<number, number>>(new Map());
-  const sentCountRef = useRef(0);
-  const ackCountRef = useRef(0);
-  const lastRttRef = useRef<number | null>(null);
-  const jitterEwmaRef = useRef(0);
+  const jointTargetRef = useRef<number[]>(DEFAULT_JOINTS);
+  const lastSentJointTargetRef = useRef<number[] | null>(null);
+  const lastSentEeTargetRef = useRef<{ x: number; y: number; z: number; wristPitchDeg: number } | null>(null);
 
   const [connected, setConnected] = useState("未连接");
   const [joints, setJoints] = useState<number[]>(DEFAULT_JOINTS);
-  const [activeProfile, setActiveProfile] = useState<string>(NETWORK_PROFILES[0].key);
+  const [displayJoints, setDisplayJoints] = useState<number[]>(DEFAULT_JOINTS);
+  const [jointDraft, setJointDraft] = useState<number[]>(DEFAULT_JOINTS);
+  const [activeProfile, setActiveProfile] = useState<string>(WIRELESS_PROFILES[0].key);
   const [hasRobotModelAsset, setHasRobotModelAsset] = useState(false);
   const [modelLoadFailed, setModelLoadFailed] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [eeTarget, setEeTarget] = useState({ x: 0.0, y: 1.7, z: 1.6 });
   const [eeWristPitchDeg, setEeWristPitchDeg] = useState(-25);
+  const [wirelessModeDraft, setWirelessModeDraft] = useState<"basic_awgn" | "advanced_cdl_ofdm">("basic_awgn");
+  const [ebnoDraft, setEbnoDraft] = useState(10);
+  const [forceSensorEnabled, setForceSensorEnabled] = useState(false);
 
   const [telemetry, setTelemetry] = useState<Telemetry>({
     seq: 0,
-    latencyMs: 0,
-    jitterMs: 0,
-    lossRate: 0,
-    bandwidthKbps: 0,
-    backendLossRate: 0,
+    averageBer: 0,
+    lastBer: 0,
+    wirelessDelayMs: 0,
+    totalWirelessDelayMs: 0,
+    trajectoryErrorMean: 0,
+    transmissionCount: 0,
+    totalRunTimeS: 0,
+    wirelessMode: "basic_awgn",
+    ebnoDb: 10,
+    physicsMode: "lightweight",
     queuePending: 0,
   });
 
@@ -349,17 +366,30 @@ export default function App() {
     ws.send(JSON.stringify(payload));
   }, []);
 
+  const isSameJointTarget = (left: number[], right: number[]): boolean =>
+    left.length === right.length && left.every((value, index) => Math.abs(value - right[index]) < 1e-6);
+
   const sendEeTarget = useCallback(
     (target: { x: number; y: number; z: number }, wristPitchDeg: number) => {
+      const nextTarget = { x: target.x, y: target.y, z: target.z, wristPitchDeg };
+      const lastTarget = lastSentEeTargetRef.current;
+      if (
+        lastTarget &&
+        Math.abs(lastTarget.x - nextTarget.x) < 1e-6 &&
+        Math.abs(lastTarget.y - nextTarget.y) < 1e-6 &&
+        Math.abs(lastTarget.z - nextTarget.z) < 1e-6 &&
+        Math.abs(lastTarget.wristPitchDeg - nextTarget.wristPitchDeg) < 1e-6
+      ) {
+        return;
+      }
+
       const cmdSeq = cmdSeqRef.current++;
-      const ts = Date.now();
-      pendingRef.current.set(cmdSeq, ts);
-      sentCountRef.current += 1;
+      lastSentEeTargetRef.current = nextTarget;
 
       send({
         type: "robot_ee_control",
         cmd_seq: cmdSeq,
-        client_timestamp: ts,
+        client_timestamp: Date.now(),
         payload: {
           target_ee: target,
           wrist_pitch_deg: wristPitchDeg,
@@ -370,30 +400,82 @@ export default function App() {
     [send]
   );
 
-  const applyProfile = useCallback(
-    (profile: NetworkProfile) => {
-      setActiveProfile(profile.key);
+  const sendJointTarget = useCallback(
+    (targetJoints: number[], steps = 10) => {
+      const lastTarget = lastSentJointTargetRef.current;
+      if (lastTarget && isSameJointTarget(lastTarget, targetJoints)) {
+        return;
+      }
+
+      const cmdSeq = cmdSeqRef.current++;
+      lastSentJointTargetRef.current = [...targetJoints];
+
       send({
-        type: "network_profile",
+        type: "robot_joint_control",
+        cmd_seq: cmdSeq,
+        client_timestamp: Date.now(),
         payload: {
-          delay_ms: profile.delayMs,
-          jitter_ms: profile.jitterMs,
-          loss_rate: profile.lossRate,
-          bandwidth_kbps: profile.bandwidthKbps,
-          queue_penalty_ms: profile.key === "bad" ? 300 : profile.key === "mid" ? 180 : 70,
+          target_positions: targetJoints,
+          steps,
         },
       });
     },
     [send]
   );
 
+  const applyProfile = useCallback(
+    (profile: WirelessProfile) => {
+      setActiveProfile(profile.key);
+      setWirelessModeDraft(profile.mode);
+      setEbnoDraft(profile.ebnoDb);
+      send({
+        type: "wireless_config",
+        payload: {
+          mode: profile.mode,
+          ebno_db: profile.ebnoDb,
+          force_sensor_enabled: forceSensorEnabled,
+        },
+      });
+    },
+    [send, forceSensorEnabled]
+  );
+
+  const applyWirelessConfig = useCallback(() => {
+    setActiveProfile("custom");
+    send({
+      type: "wireless_config",
+      payload: {
+        mode: wirelessModeDraft,
+        ebno_db: ebnoDraft,
+        force_sensor_enabled: forceSensorEnabled,
+      },
+    });
+  }, [send, wirelessModeDraft, ebnoDraft, forceSensorEnabled]);
+
   const applyEeControl = useCallback(() => {
     sendEeTarget(eeTarget, eeWristPitchDeg);
   }, [eeTarget, eeWristPitchDeg, sendEeTarget]);
 
+  const applyJointControl = useCallback(() => {
+    sendJointTarget(jointDraft, 12);
+  }, [jointDraft, sendJointTarget]);
+
+  const applyJointPreset = useCallback(
+    (presetJoints: ReadonlyArray<number>) => {
+      setJointDraft([...presetJoints]);
+      setJoints([...presetJoints]);
+      sendJointTarget([...presetJoints], 12);
+    },
+    [sendJointTarget]
+  );
+
   const reset = useCallback(() => {
     setJoints(DEFAULT_JOINTS);
-    commandedJointsRef.current = [...DEFAULT_JOINTS];
+    jointTargetRef.current = [...DEFAULT_JOINTS];
+    lastSentJointTargetRef.current = null;
+    lastSentEeTargetRef.current = null;
+    setDisplayJoints([...DEFAULT_JOINTS]);
+    setJointDraft([...DEFAULT_JOINTS]);
     setEeTarget({ x: 0.0, y: 1.7, z: 1.6 });
     setEeWristPitchDeg(-25);
     send({ type: "robot_reset", payload: { initial_positions: [0, 0, 0, 0, 0, 0, 0] } });
@@ -446,7 +528,7 @@ export default function App() {
 
       ws.onopen = () => {
         setConnected("已连接");
-        applyProfile(NETWORK_PROFILES[0]);
+        applyProfile(WIRELESS_PROFILES[0]);
       };
       ws.onerror = () => setConnected("连接错误");
       ws.onclose = () => {
@@ -459,63 +541,47 @@ export default function App() {
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data) as {
           type?: string;
-          cmd_seq?: number;
-          client_timestamp?: number;
           seq?: number;
-          network_stats?: { avg_total_delay_ms?: number; observed_loss_rate?: number };
-          network_config?: { delay_ms?: number; jitter_ms?: number; loss_rate?: number; bandwidth_kbps?: number };
+          wireless_stats?: {
+            average_ber?: number;
+            last_ber?: number;
+            wireless_delay_ms?: number;
+            total_wireless_delay_ms?: number;
+            trajectory_error_mean?: number;
+            transmission_count?: number;
+          };
+          experiment_config?: { wireless_mode?: string; ebno_db?: number; physics_mode?: string; force_sensor_enabled?: boolean };
+          runtime_stats?: { total_run_time_s?: number; queue_pending?: number };
           queue?: { pending?: number };
           simulation_status?: { joint_positions?: number[] };
         };
 
         if (data.type === "ack") {
-          const ackSeq = data.cmd_seq ?? -1;
-          const sentTs = pendingRef.current.get(ackSeq);
-          if (sentTs !== undefined) {
-            pendingRef.current.delete(ackSeq);
-            ackCountRef.current += 1;
-
-            const rtt = Date.now() - sentTs;
-            const last = lastRttRef.current;
-            const j = last === null ? 0 : Math.abs(rtt - last);
-            jitterEwmaRef.current = jitterEwmaRef.current * 0.8 + j * 0.2;
-            lastRttRef.current = rtt;
-
-            const sent = sentCountRef.current;
-            const acked = ackCountRef.current;
-            const calculatedLoss = sent > 0 ? (sent - acked) / sent : 0;
-
-            setTelemetry((prev) => ({
-              ...prev,
-              latencyMs: rtt,
-              jitterMs: jitterEwmaRef.current,
-              lossRate: calculatedLoss,
-            }));
-          }
           return;
         }
 
         if (data.type !== "telemetry") return;
 
-        const sent = sentCountRef.current;
-        const acked = ackCountRef.current;
-        const calculatedLoss = sent > 0 ? (sent - acked) / sent : 0;
-
         setTelemetry({
           seq: data.seq ?? 0,
-          latencyMs: lastRttRef.current ?? data.network_stats?.avg_total_delay_ms ?? 0,
-          jitterMs: jitterEwmaRef.current || data.network_config?.jitter_ms || 0,
-          lossRate: calculatedLoss,
-          bandwidthKbps: data.network_config?.bandwidth_kbps ?? 0,
-          backendLossRate: data.network_stats?.observed_loss_rate ?? 0,
-          queuePending: data.queue?.pending ?? 0,
+          averageBer: data.wireless_stats?.average_ber ?? 0,
+          lastBer: data.wireless_stats?.last_ber ?? 0,
+          wirelessDelayMs: data.wireless_stats?.wireless_delay_ms ?? 0,
+          totalWirelessDelayMs: data.wireless_stats?.total_wireless_delay_ms ?? 0,
+          trajectoryErrorMean: data.wireless_stats?.trajectory_error_mean ?? 0,
+          transmissionCount: data.wireless_stats?.transmission_count ?? 0,
+          totalRunTimeS: data.runtime_stats?.total_run_time_s ?? 0,
+          wirelessMode: data.experiment_config?.wireless_mode ?? "basic_awgn",
+          ebnoDb: data.experiment_config?.ebno_db ?? 10,
+          physicsMode: data.experiment_config?.physics_mode ?? "lightweight",
+          queuePending: data.runtime_stats?.queue_pending ?? data.queue?.pending ?? 0,
         });
 
         const next = data.simulation_status?.joint_positions ?? [];
         if (next.length >= 4) {
           const synced = [next[0], next[1], next[2], next[3]];
           setJoints(synced);
-          commandedJointsRef.current = synced;
+          jointTargetRef.current = synced;
         }
       };
     };
@@ -530,27 +596,82 @@ export default function App() {
     };
   }, []);
 
-  const latencyColor = useMemo(() => metricColor(telemetry.latencyMs, 80, 150), [telemetry.latencyMs]);
-  const jitterColor = useMemo(() => metricColor(telemetry.jitterMs, 15, 35), [telemetry.jitterMs]);
-  const lossColor = useMemo(() => metricColor(telemetry.lossRate * 100, 2, 8), [telemetry.lossRate]);
-  const bandwidthColor = useMemo(
-    () => metricColor(telemetry.bandwidthKbps, 2000, 1000, true),
-    [telemetry.bandwidthKbps]
+  useEffect(() => {
+    jointTargetRef.current = joints;
+  }, [joints]);
+
+  useEffect(() => {
+    let frameId = 0;
+
+    const tick = () => {
+      setDisplayJoints((previous) => {
+        const target = jointTargetRef.current;
+        const next = previous.map((value, index) => {
+          const delta = (target[index] ?? value) - value;
+          return Math.abs(delta) < 0.0008 ? target[index] ?? value : value + delta * 0.16;
+        });
+        return next;
+      });
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    frameId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frameId);
+  }, []);
+
+  const berColor = useMemo(() => metricColor(telemetry.averageBer * 100, 1.5, 4.0), [telemetry.averageBer]);
+  const wirelessDelayColor = useMemo(() => metricColor(telemetry.wirelessDelayMs, 10, 20), [telemetry.wirelessDelayMs]);
+  const trajectoryErrorColor = useMemo(
+    () => metricColor(telemetry.trajectoryErrorMean * 1000, 8, 20),
+    [telemetry.trajectoryErrorMean]
   );
 
   return (
-    <div style={{ minHeight: "100vh", padding: 16, background: "linear-gradient(160deg, #f8fafc 0%, #eef2ff 100%)" }}>
-      <div style={{ margin: "0 auto", maxWidth: 1360 }}>
-        <h2 style={{ margin: 0 }}>机器人远程操控仿真与可视化平台</h2>
-        <p style={{ marginTop: 8, marginBottom: 18, color: "#334155" }}>
-          WebSocket状态：{connected} | 序号：#{telemetry.seq}
-        </p>
+    <div style={{ minHeight: "100vh", padding: 16, background: "linear-gradient(145deg, #f8fafc 0%, #eaf0ff 100%)" }}>
+      <div style={{ margin: "0 auto", maxWidth: 1500 }}>
+        <Card style={{ padding: 14, marginBottom: 14, borderRadius: 14 }}>
+          <h2 style={{ margin: 0 }}>机器人远程操控仿真与可视化平台</h2>
+          <p style={{ marginTop: 8, marginBottom: 0, color: "#334155" }}>
+            WebSocket状态：{connected} | 序号：#{telemetry.seq}
+          </p>
+        </Card>
 
         <Grid container spacing={2}>
-          <Grid item xs={12} md={3}>
-            <Card style={{ padding: 16, height: "100%" }}>
-              <h3 style={{ marginTop: 0 }}>控制按钮</h3>
+          <Grid item xs={12} md={4} lg={4}>
+            <Card style={{ padding: 14, borderRadius: 14, position: "sticky", top: 12, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+              <h3 style={{ marginTop: 0 }}>机械臂控制</h3>
+              <p style={{ marginTop: -6, marginBottom: 10, color: "#64748b", fontSize: 12 }}>
+                提示：详细说明已移到页面最下方，方便你调参数时同时观察模型。
+              </p>
               <div style={{ display: "grid", gap: 10 }}>
+                <Card variant="outlined" style={{ padding: 10 }}>
+                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>关节直接控制</p>
+                  <p style={{ margin: "0 0 8px", color: "#64748b", fontSize: 12 }}>
+                    不需要理解 IK，直接拖动关节角就能移动机械臂。
+                  </p>
+                  {jointDraft.map((value, index) => (
+                    <div key={`joint-${index}`} style={{ marginBottom: 8 }}>
+                      <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>
+                        关节 {index + 1}: {value.toFixed(2)} rad
+                      </p>
+                      <Slider
+                        min={-2.6}
+                        max={2.6}
+                        step={0.01}
+                        value={value}
+                        onChange={(_, v) => {
+                          const next = [...jointDraft];
+                          next[index] = v as number;
+                          setJointDraft(next);
+                        }}
+                      />
+                    </div>
+                  ))}
+                  <Button variant="contained" onClick={applyJointControl} fullWidth>
+                    发送关节目标
+                  </Button>
+                </Card>
+
                 <Card variant="outlined" style={{ padding: 10 }}>
                   <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>末端目标控制（IK）</p>
                   <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>X: {eeTarget.x.toFixed(2)} m</p>
@@ -590,8 +711,65 @@ export default function App() {
                   </Button>
                 </Card>
 
+                <Card variant="outlined" style={{ padding: 10 }}>
+                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>一键姿态预设</p>
+                  <p style={{ margin: "0 0 8px", color: "#64748b", fontSize: 12 }}>
+                    适合演示：点击即走一个常见姿态，不需要先理解关节或末端坐标。
+                  </p>
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {JOINT_PRESETS.map((preset) => (
+                      <Button key={preset.key} variant="outlined" onClick={() => applyJointPreset(preset.joints)} fullWidth>
+                        {preset.label}
+                      </Button>
+                    ))}
+                  </div>
+                </Card>
+
+                <Card variant="outlined" style={{ padding: 10 }}>
+                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>无线实验参数</p>
+                  <p style={{ margin: "0 0 6px", color: "#64748b", fontSize: 12 }}>
+                    后端已应用：{telemetry.wirelessMode} | Eb/No {telemetry.ebnoDb.toFixed(1)} dB
+                  </p>
+                  <Card variant="outlined" style={{ padding: 8, marginBottom: 8, background: "#f8fafc", borderStyle: "dashed" }}>
+                    <p style={{ margin: 0, color: "#334155", fontSize: 12, lineHeight: 1.55 }}>
+                      参数解释：<br />
+                      1) `advanced_cdl_ofdm` 更接近真实无线环境，通常更稳但处理更慢。<br />
+                      2) `Eb/No` 越高，信号相对噪声越强，BER 往往更低。<br />
+                      3) 噪声越大，误码和轨迹偏差越明显。
+                    </p>
+                  </Card>
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <Button
+                        variant={wirelessModeDraft === "basic_awgn" ? "contained" : "outlined"}
+                        onClick={() => setWirelessModeDraft("basic_awgn")}
+                      >
+                        Basic AWGN
+                      </Button>
+                      <Button
+                        variant={wirelessModeDraft === "advanced_cdl_ofdm" ? "contained" : "outlined"}
+                        onClick={() => setWirelessModeDraft("advanced_cdl_ofdm")}
+                      >
+                        Advanced CDL+OFDM
+                      </Button>
+                    </div>
+                    <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>Eb/No: {ebnoDraft.toFixed(1)} dB</p>
+                    <Slider min={-2} max={30} step={0.5} value={ebnoDraft} onChange={(_, v) => setEbnoDraft(v as number)} />
+                    <Button
+                      variant={forceSensorEnabled ? "contained" : "outlined"}
+                      color={forceSensorEnabled ? "secondary" : "primary"}
+                      onClick={() => setForceSensorEnabled((prev) => !prev)}
+                    >
+                      力传感标志：{forceSensorEnabled ? "开启" : "关闭"}
+                    </Button>
+                    <Button variant="contained" onClick={applyWirelessConfig} fullWidth>
+                      应用无线参数
+                    </Button>
+                  </div>
+                </Card>
+
                 <Button variant="text" color="error" onClick={reset}>复位</Button>
-                {NETWORK_PROFILES.map((profile) => (
+                {WIRELESS_PROFILES.map((profile) => (
                   <Button
                     key={profile.key}
                     variant={activeProfile === profile.key ? "contained" : "outlined"}
@@ -605,7 +783,7 @@ export default function App() {
           </Grid>
 
           <Grid item xs={12} md={5}>
-            <Card style={{ padding: 16, height: "100%" }}>
+            <Card style={{ padding: 14, borderRadius: 14, position: "sticky", top: 12 }}>
               <h3 style={{ marginTop: 0 }}>3D机械臂</h3>
               <p style={{ marginTop: -6, marginBottom: 10, color: "#475569", fontSize: 12 }}>
                 {hasRobotModelAsset
@@ -614,7 +792,7 @@ export default function App() {
                     : "已加载真实模型资产（ur5e OBJ）"
                   : "未检测到模型资产，使用内置几何机械臂"}
               </p>
-              <div style={{ height: 420, borderRadius: 12, overflow: "hidden", background: "#dbeafe" }}>
+              <div style={{ height: "calc(100vh - 210px)", minHeight: 420, borderRadius: 12, overflow: "hidden", background: "#dbeafe" }}>
                 <Canvas
                   shadows
                   gl={{ antialias: true, powerPreference: "high-performance" }}
@@ -649,13 +827,13 @@ export default function App() {
                   </mesh>
 
                   {hasRobotModelAsset ? (
-                    <ModelErrorBoundary fallback={<Arm3D joints={joints} grip={0.7} />} onError={() => setModelLoadFailed(true)}>
-                      <Suspense fallback={<Arm3D joints={joints} grip={0.7} />}>
-                        <RobotModelAsset joints={joints} onReady={() => setModelReady(true)} />
+                    <ModelErrorBoundary fallback={<Arm3D joints={displayJoints} grip={0.7} />} onError={() => setModelLoadFailed(true)}>
+                      <Suspense fallback={<Arm3D joints={displayJoints} grip={0.7} />}>
+                        <RobotModelAsset joints={displayJoints} onReady={() => setModelReady(true)} />
                       </Suspense>
                     </ModelErrorBoundary>
                   ) : (
-                    <Arm3D joints={joints} grip={0.7} />
+                    <Arm3D joints={displayJoints} grip={0.7} />
                   )}
                   <ContactShadows
                     position={[0, 0, 0]}
@@ -671,50 +849,84 @@ export default function App() {
             </Card>
           </Grid>
 
-          <Grid item xs={12} md={4}>
+          <Grid item xs={12} md={3}>
             <Grid container spacing={2}>
               <Grid item xs={12} sm={6} md={12}>
-                <Card style={{ padding: 16 }}>
-                  <p style={{ margin: 0, color: "#475569" }}>时延</p>
-                  <div style={{ fontSize: 38, fontWeight: 700, color: latencyColor }}>{telemetry.latencyMs.toFixed(1)} ms</div>
-                </Card>
-              </Grid>
-              <Grid item xs={12} sm={6} md={12}>
-                <Card style={{ padding: 16 }}>
-                  <p style={{ margin: 0, color: "#475569" }}>抖动</p>
-                  <div style={{ fontSize: 38, fontWeight: 700, color: jitterColor }}>{telemetry.jitterMs.toFixed(1)} ms</div>
-                </Card>
-              </Grid>
-              <Grid item xs={12} sm={6} md={12}>
-                <Card style={{ padding: 16 }}>
-                  <p style={{ margin: 0, color: "#475569" }}>丢包率</p>
-                  <div style={{ fontSize: 38, fontWeight: 700, color: lossColor }}>{(telemetry.lossRate * 100).toFixed(2)}%</div>
+                <Card style={{ padding: 14, borderRadius: 14 }}>
+                  <p style={{ margin: 0, color: "#475569" }}>平均误码率 BER</p>
+                  <div style={{ fontSize: 38, fontWeight: 700, color: berColor }}>{(telemetry.averageBer * 100).toFixed(3)}%</div>
                   <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
-                    后端观测：{(telemetry.backendLossRate * 100).toFixed(2)}%
+                    最近一次 BER：{(telemetry.lastBer * 100).toFixed(3)}%
                   </p>
                 </Card>
               </Grid>
               <Grid item xs={12} sm={6} md={12}>
-                <Card style={{ padding: 16 }}>
-                  <p style={{ margin: 0, color: "#475569" }}>带宽</p>
-                  <div style={{ fontSize: 38, fontWeight: 700, color: bandwidthColor }}>{telemetry.bandwidthKbps.toFixed(0)} kbps</div>
+                <Card style={{ padding: 14, borderRadius: 14 }}>
+                  <p style={{ margin: 0, color: "#475569" }}>无线链路处理时延</p>
+                  <div style={{ fontSize: 38, fontWeight: 700, color: wirelessDelayColor }}>
+                    {telemetry.wirelessDelayMs.toFixed(1)} ms
+                  </div>
                   <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
-                    队列积压：
-                    <span
-                      style={{
-                        color: telemetry.queuePending > 5 ? "#dc2626" : "#64748b",
-                        fontWeight: telemetry.queuePending > 5 ? 700 : 400,
-                        marginLeft: 4,
-                      }}
-                    >
-                      {telemetry.queuePending}
-                    </span>
+                    累计无线时延：{telemetry.totalWirelessDelayMs.toFixed(1)} ms
+                  </p>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={12}>
+                <Card style={{ padding: 14, borderRadius: 14 }}>
+                  <p style={{ margin: 0, color: "#475569" }}>轨迹误差均值</p>
+                  <div style={{ fontSize: 38, fontWeight: 700, color: trajectoryErrorColor }}>
+                    {(telemetry.trajectoryErrorMean * 1000).toFixed(2)} mrad
+                  </div>
+                  <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
+                    传输次数：{telemetry.transmissionCount}
+                  </p>
+                </Card>
+              </Grid>
+              <Grid item xs={12} sm={6} md={12}>
+                <Card style={{ padding: 14, borderRadius: 14 }}>
+                  <p style={{ margin: 0, color: "#475569" }}>实验运行状态</p>
+                  <div style={{ fontSize: 34, fontWeight: 700, color: "#0f172a" }}>{telemetry.totalRunTimeS.toFixed(1)} s</div>
+                  <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
+                    模式：{telemetry.wirelessMode} | Eb/No：{telemetry.ebnoDb.toFixed(1)} dB | 物理引擎：{telemetry.physicsMode}
+                  </p>
+                  <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12 }}>
+                    队列积压：{telemetry.queuePending}
                   </p>
                 </Card>
               </Grid>
             </Grid>
           </Grid>
         </Grid>
+
+        <Card style={{ marginTop: 12, padding: 14, borderRadius: 14 }}>
+          <h3 style={{ marginTop: 0, marginBottom: 10 }}>快速说明</h3>
+          <Grid container spacing={1.5}>
+            <Grid item xs={12} md={4}>
+              <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
+                <p style={{ margin: 0, color: "#334155", fontWeight: 700 }}>三种控制方式</p>
+                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.5 }}>
+                  关节直接控制最直观；一键姿态预设适合演示；末端目标控制适合指定空间位置。
+                </p>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
+                <p style={{ margin: 0, color: "#334155", fontWeight: 700 }}>怎么看指标</p>
+                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.5 }}>
+                  BER 越低越好；无线时延越低越快；轨迹误差越低越准。
+                </p>
+              </Card>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
+                <p style={{ margin: 0, color: "#334155", fontWeight: 700 }}>怎么做实验</p>
+                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.5 }}>
+                  切换无线模式与 Eb/No 后重复同一动作，对比 BER、时延和误差变化即可。
+                </p>
+              </Card>
+            </Grid>
+          </Grid>
+        </Card>
       </div>
     </div>
   );

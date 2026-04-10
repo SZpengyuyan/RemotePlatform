@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { CssBaseline, ThemeProvider } from "@mui/material";
 import App from "./App";
+import NetworkTopologyPreview from "./NetworkTopologyPreview";
 import { appTheme } from "./theme";
 
 type RootErrorBoundaryProps = {
@@ -53,7 +54,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <ThemeProvider theme={appTheme}>
       <CssBaseline />
       <RootErrorBoundary>
-        <App />
+        {new URLSearchParams(window.location.search).get("preview") === "network" ? <NetworkTopologyPreview /> : <App />}
       </RootErrorBoundary>
     </ThemeProvider>
   </React.StrictMode>

@@ -1,9 +1,10 @@
 import { Component, ErrorInfo, ReactNode, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Card, Grid, Slider } from "@mui/material";
+import { Button, Card, Grid, Slider, Tab, Tabs } from "@mui/material";
 import { Canvas, useLoader } from "@react-three/fiber";
 import { ContactShadows, OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import { Box3, Group, Mesh, MeshStandardMaterial, Vector3 } from "three";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import NetworkTopologyMap, { TopologyLink, TopologyNode } from "./NetworkTopologyMap";
 
 type Telemetry = {
   seq: number;
@@ -129,6 +130,57 @@ function metricColor(value: number, warn: number, danger: number, inverse = fals
   if (value >= danger) return "#b91c1c";
   if (value >= warn) return "#b45309";
   return "#166534";
+}
+
+const TOPOLOGY_NODES: TopologyNode[] = [
+  { id: "client", name: "控制端 Client", role: "sender", lat: 31.2304, lng: 121.4737 },
+  { id: "edge", name: "边缘节点 Edge", role: "router", lat: 30.5728, lng: 104.0668 },
+  { id: "core", name: "核心节点 Core", role: "router", lat: 39.9042, lng: 116.4074 },
+  { id: "robot", name: "机器人 Robot", role: "receiver", lat: 22.5431, lng: 114.0579 },
+];
+
+function clampRange(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function buildTopologyLinks(telemetry: Telemetry): TopologyLink[] {
+  const modeFactor = telemetry.wirelessMode === "advanced_cdl_ofdm" ? 1.2 : 1.0;
+  const qualityFactor = clampRange((telemetry.ebnoDb + 2) / 32, 0.1, 1.1);
+  const baseDelay = Math.max(18, telemetry.wirelessDelayMs || 42);
+  const berFactor = clampRange(1 + telemetry.averageBer * 32, 0.8, 2.5);
+
+  const clientEdgeLatency = baseDelay * 0.33 * modeFactor * berFactor * (1.2 - qualityFactor * 0.4);
+  const edgeCoreLatency = baseDelay * 0.42 * modeFactor * berFactor * (1.25 - qualityFactor * 0.35);
+  const coreRobotLatency = baseDelay * 0.38 * modeFactor * berFactor * (1.2 - qualityFactor * 0.3);
+
+  const lossBase = clampRange(telemetry.averageBer * 0.72 + (1 - qualityFactor) * 0.03, 0.002, 0.1);
+
+  return [
+    {
+      id: "client-edge",
+      from: "client",
+      to: "edge",
+      latencyMs: clampRange(clientEdgeLatency, 8, 180),
+      packetLoss: clampRange(lossBase * 0.6, 0.001, 0.09),
+      jitterMs: clampRange(clientEdgeLatency * 0.16, 1.2, 30),
+    },
+    {
+      id: "edge-core",
+      from: "edge",
+      to: "core",
+      latencyMs: clampRange(edgeCoreLatency, 10, 220),
+      packetLoss: clampRange(lossBase * 1.25, 0.002, 0.12),
+      jitterMs: clampRange(edgeCoreLatency * 0.18, 1.5, 35),
+    },
+    {
+      id: "core-robot",
+      from: "core",
+      to: "robot",
+      latencyMs: clampRange(coreRobotLatency, 9, 200),
+      packetLoss: clampRange(lossBase * 0.95, 0.001, 0.1),
+      jitterMs: clampRange(coreRobotLatency * 0.17, 1.3, 32),
+    },
+  ];
 }
 
 function Arm3D({ joints, grip }: { joints: number[]; grip: number }) {
@@ -344,6 +396,7 @@ export default function App() {
   const [wirelessModeDraft, setWirelessModeDraft] = useState<"basic_awgn" | "advanced_cdl_ofdm">("basic_awgn");
   const [ebnoDraft, setEbnoDraft] = useState(10);
   const [forceSensorEnabled, setForceSensorEnabled] = useState(false);
+  const [activeTab, setActiveTab] = useState<"control" | "network">("control");
 
   const [telemetry, setTelemetry] = useState<Telemetry>({
     seq: 0,
@@ -625,6 +678,15 @@ export default function App() {
     () => metricColor(telemetry.trajectoryErrorMean * 1000, 8, 20),
     [telemetry.trajectoryErrorMean]
   );
+  const topologyLinks = useMemo(() => buildTopologyLinks(telemetry), [telemetry]);
+  const totalTopologyLatency = useMemo(
+    () => topologyLinks.reduce((sum, link) => sum + link.latencyMs, 0),
+    [topologyLinks]
+  );
+  const averageTopologyLoss = useMemo(
+    () => topologyLinks.reduce((sum, link) => sum + link.packetLoss, 0) / Math.max(1, topologyLinks.length),
+    [topologyLinks]
+  );
 
   return (
     <div style={{ minHeight: "100vh", padding: 16, background: "linear-gradient(145deg, #f8fafc 0%, #eaf0ff 100%)" }}>
@@ -634,299 +696,363 @@ export default function App() {
           <p style={{ marginTop: 8, marginBottom: 0, color: "#334155" }}>
             WebSocket状态：{connected} | 序号：#{telemetry.seq}
           </p>
+          <Tabs
+            value={activeTab}
+            onChange={(_, value) => setActiveTab(value)}
+            style={{ marginTop: 10 }}
+          >
+            <Tab value="control" label="控制与仿真" />
+            <Tab value="network" label="网络地图" />
+          </Tabs>
         </Card>
 
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={4} lg={4}>
-            <Card style={{ padding: 14, borderRadius: 14, position: "sticky", top: 12, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
-              <h3 style={{ marginTop: 0 }}>机械臂控制</h3>
-              <p style={{ marginTop: -6, marginBottom: 10, color: "#64748b", fontSize: 12 }}>
-                提示：详细说明已移到页面最下方，方便你调参数时同时观察模型。
-              </p>
-              <div style={{ display: "grid", gap: 10 }}>
-                <Card variant="outlined" style={{ padding: 10 }}>
-                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>关节直接控制</p>
-                  <p style={{ margin: "0 0 8px", color: "#64748b", fontSize: 12 }}>
-                    不需要理解 IK，直接拖动关节角就能移动机械臂。
+        {activeTab === "control" ? (
+          <>
+
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={4} lg={4}>
+                <Card style={{ padding: 14, borderRadius: 14, position: "sticky", top: 12, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+                  <h3 style={{ marginTop: 0 }}>机械臂控制</h3>
+                  <p style={{ marginTop: -6, marginBottom: 10, color: "#64748b", fontSize: 12 }}>
+                    提示：详细说明已移到页面最下方，方便你调参数时同时观察模型。
                   </p>
-                  {jointDraft.map((value, index) => (
-                    <div key={`joint-${index}`} style={{ marginBottom: 8 }}>
-                      <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>
-                        关节 {index + 1}: {value.toFixed(2)} rad
+                  <div style={{ display: "grid", gap: 10 }}>
+                    <Card variant="outlined" style={{ padding: 10 }}>
+                      <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>关节直接控制</p>
+                      <p style={{ margin: "0 0 8px", color: "#64748b", fontSize: 12 }}>
+                        不需要理解 IK，直接拖动关节角就能移动机械臂。
                       </p>
+                      {jointDraft.map((value, index) => (
+                        <div key={`joint-${index}`} style={{ marginBottom: 8 }}>
+                          <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>
+                            关节 {index + 1}: {value.toFixed(2)} rad
+                          </p>
+                          <Slider
+                            min={-2.6}
+                            max={2.6}
+                            step={0.01}
+                            value={value}
+                            onChange={(_, v) => {
+                              const next = [...jointDraft];
+                              next[index] = v as number;
+                              setJointDraft(next);
+                            }}
+                          />
+                        </div>
+                      ))}
+                      <Button variant="contained" onClick={applyJointControl} fullWidth>
+                        发送关节目标
+                      </Button>
+                    </Card>
+
+                    <Card variant="outlined" style={{ padding: 10 }}>
+                      <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>末端目标控制（IK）</p>
+                      <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>X: {eeTarget.x.toFixed(2)} m</p>
                       <Slider
-                        min={-2.6}
-                        max={2.6}
-                        step={0.01}
-                        value={value}
-                        onChange={(_, v) => {
-                          const next = [...jointDraft];
-                          next[index] = v as number;
-                          setJointDraft(next);
-                        }}
+                        min={-1.2}
+                        max={1.2}
+                        step={0.02}
+                        value={eeTarget.x}
+                        onChange={(_, v) => setEeTarget((prev) => ({ ...prev, x: v as number }))}
                       />
-                    </div>
-                  ))}
-                  <Button variant="contained" onClick={applyJointControl} fullWidth>
-                    发送关节目标
-                  </Button>
-                </Card>
+                      <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>Y: {eeTarget.y.toFixed(2)} m</p>
+                      <Slider
+                        min={0.6}
+                        max={2.4}
+                        step={0.02}
+                        value={eeTarget.y}
+                        onChange={(_, v) => setEeTarget((prev) => ({ ...prev, y: v as number }))}
+                      />
+                      <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>Z: {eeTarget.z.toFixed(2)} m</p>
+                      <Slider
+                        min={0.2}
+                        max={2.8}
+                        step={0.02}
+                        value={eeTarget.z}
+                        onChange={(_, v) => setEeTarget((prev) => ({ ...prev, z: v as number }))}
+                      />
+                      <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>腕部俯仰: {eeWristPitchDeg}°</p>
+                      <Slider
+                        min={-120}
+                        max={80}
+                        step={1}
+                        value={eeWristPitchDeg}
+                        onChange={(_, v) => setEeWristPitchDeg(v as number)}
+                      />
+                      <Button variant="contained" color="secondary" onClick={applyEeControl} fullWidth>
+                        发送末端目标
+                      </Button>
+                    </Card>
 
-                <Card variant="outlined" style={{ padding: 10 }}>
-                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>末端目标控制（IK）</p>
-                  <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>X: {eeTarget.x.toFixed(2)} m</p>
-                  <Slider
-                    min={-1.2}
-                    max={1.2}
-                    step={0.02}
-                    value={eeTarget.x}
-                    onChange={(_, v) => setEeTarget((prev) => ({ ...prev, x: v as number }))}
-                  />
-                  <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>Y: {eeTarget.y.toFixed(2)} m</p>
-                  <Slider
-                    min={0.6}
-                    max={2.4}
-                    step={0.02}
-                    value={eeTarget.y}
-                    onChange={(_, v) => setEeTarget((prev) => ({ ...prev, y: v as number }))}
-                  />
-                  <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>Z: {eeTarget.z.toFixed(2)} m</p>
-                  <Slider
-                    min={0.2}
-                    max={2.8}
-                    step={0.02}
-                    value={eeTarget.z}
-                    onChange={(_, v) => setEeTarget((prev) => ({ ...prev, z: v as number }))}
-                  />
-                  <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>腕部俯仰: {eeWristPitchDeg}°</p>
-                  <Slider
-                    min={-120}
-                    max={80}
-                    step={1}
-                    value={eeWristPitchDeg}
-                    onChange={(_, v) => setEeWristPitchDeg(v as number)}
-                  />
-                  <Button variant="contained" color="secondary" onClick={applyEeControl} fullWidth>
-                    发送末端目标
-                  </Button>
-                </Card>
+                    <Card variant="outlined" style={{ padding: 10 }}>
+                      <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>一键姿态预设</p>
+                      <p style={{ margin: "0 0 8px", color: "#64748b", fontSize: 12 }}>
+                        适合演示：点击即走一个常见姿态，不需要先理解关节或末端坐标。
+                      </p>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {JOINT_PRESETS.map((preset) => (
+                          <Button key={preset.key} variant="outlined" onClick={() => applyJointPreset(preset.joints)} fullWidth>
+                            {preset.label}
+                          </Button>
+                        ))}
+                      </div>
+                    </Card>
 
-                <Card variant="outlined" style={{ padding: 10 }}>
-                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>一键姿态预设</p>
-                  <p style={{ margin: "0 0 8px", color: "#64748b", fontSize: 12 }}>
-                    适合演示：点击即走一个常见姿态，不需要先理解关节或末端坐标。
-                  </p>
-                  <div style={{ display: "grid", gap: 8 }}>
-                    {JOINT_PRESETS.map((preset) => (
-                      <Button key={preset.key} variant="outlined" onClick={() => applyJointPreset(preset.joints)} fullWidth>
-                        {preset.label}
+                    <Card variant="outlined" style={{ padding: 10 }}>
+                      <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>无线实验参数</p>
+                      <p style={{ margin: "0 0 6px", color: "#64748b", fontSize: 12 }}>
+                        后端已应用：{telemetry.wirelessMode} | Eb/No {telemetry.ebnoDb.toFixed(1)} dB
+                      </p>
+                      <Card variant="outlined" style={{ padding: 8, marginBottom: 8, background: "#f8fafc", borderStyle: "dashed" }}>
+                        <p style={{ margin: 0, color: "#334155", fontSize: 12, lineHeight: 1.55 }}>
+                          参数解释：<br />
+                          1) `advanced_cdl_ofdm` 更接近真实无线环境，通常更稳但处理更慢。<br />
+                          2) `Eb/No` 越高，信号相对噪声越强，BER 往往更低。<br />
+                          3) 噪声越大，误码和轨迹偏差越明显。
+                        </p>
+                      </Card>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                          <Button
+                            variant={wirelessModeDraft === "basic_awgn" ? "contained" : "outlined"}
+                            onClick={() => setWirelessModeDraft("basic_awgn")}
+                          >
+                            Basic AWGN
+                          </Button>
+                          <Button
+                            variant={wirelessModeDraft === "advanced_cdl_ofdm" ? "contained" : "outlined"}
+                            onClick={() => setWirelessModeDraft("advanced_cdl_ofdm")}
+                          >
+                            Advanced CDL+OFDM
+                          </Button>
+                        </div>
+                        <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>Eb/No: {ebnoDraft.toFixed(1)} dB</p>
+                        <Slider min={-2} max={30} step={0.5} value={ebnoDraft} onChange={(_, v) => setEbnoDraft(v as number)} />
+                        <Button
+                          variant={forceSensorEnabled ? "contained" : "outlined"}
+                          color={forceSensorEnabled ? "secondary" : "primary"}
+                          onClick={() => setForceSensorEnabled((prev) => !prev)}
+                        >
+                          力传感标志：{forceSensorEnabled ? "开启" : "关闭"}
+                        </Button>
+                        <Button variant="contained" onClick={applyWirelessConfig} fullWidth>
+                          应用无线参数
+                        </Button>
+                      </div>
+                    </Card>
+
+                    <Button variant="text" color="error" onClick={reset}>复位</Button>
+                    {WIRELESS_PROFILES.map((profile) => (
+                      <Button
+                        key={profile.key}
+                        variant={activeProfile === profile.key ? "contained" : "outlined"}
+                        onClick={() => applyProfile(profile)}
+                      >
+                        {profile.label}
                       </Button>
                     ))}
                   </div>
                 </Card>
+              </Grid>
 
-                <Card variant="outlined" style={{ padding: 10 }}>
-                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>无线实验参数</p>
-                  <p style={{ margin: "0 0 6px", color: "#64748b", fontSize: 12 }}>
-                    后端已应用：{telemetry.wirelessMode} | Eb/No {telemetry.ebnoDb.toFixed(1)} dB
+              <Grid item xs={12} md={5}>
+                <Card style={{ padding: 14, borderRadius: 14, position: "sticky", top: 12 }}>
+                  <h3 style={{ marginTop: 0 }}>3D机械臂</h3>
+                  <p style={{ marginTop: -6, marginBottom: 10, color: "#475569", fontSize: 12 }}>
+                    {hasRobotModelAsset
+                      ? modelLoadFailed
+                        ? "真实模型加载失败，已回退内置几何机械臂"
+                        : "已加载真实模型资产（ur5e OBJ）"
+                      : "未检测到模型资产，使用内置几何机械臂"}
                   </p>
-                  <Card variant="outlined" style={{ padding: 8, marginBottom: 8, background: "#f8fafc", borderStyle: "dashed" }}>
-                    <p style={{ margin: 0, color: "#334155", fontSize: 12, lineHeight: 1.55 }}>
-                      参数解释：<br />
-                      1) `advanced_cdl_ofdm` 更接近真实无线环境，通常更稳但处理更慢。<br />
-                      2) `Eb/No` 越高，信号相对噪声越强，BER 往往更低。<br />
-                      3) 噪声越大，误码和轨迹偏差越明显。
+                  <div style={{ height: "calc(100vh - 210px)", minHeight: 420, borderRadius: 12, overflow: "hidden", background: "#dbeafe" }}>
+                    <Canvas
+                      shadows
+                      gl={{ antialias: true, powerPreference: "high-performance" }}
+                      dpr={[1, 1.35]}
+                    >
+                      <PerspectiveCamera makeDefault position={[3.8, 2.55, 4.4]} fov={48} />
+                      <color attach="background" args={["#dbeafe"]} />
+                      <fog attach="fog" args={["#dbeafe", 8, 18]} />
+
+                      <ambientLight intensity={0.25} />
+                      <hemisphereLight intensity={0.5} color="#f8fafc" groundColor="#94a3b8" />
+                      <directionalLight
+                        castShadow
+                        intensity={1.5}
+                        position={[5.5, 7.5, 4.5]}
+                        shadow-mapSize-width={1024}
+                        shadow-mapSize-height={1024}
+                        shadow-bias={-0.00008}
+                      />
+                      <spotLight
+                        castShadow
+                        intensity={0.85}
+                        angle={0.42}
+                        penumbra={0.75}
+                        position={[-3.6, 5.2, 2.5]}
+                        color="#dbeafe"
+                      />
+                      <pointLight intensity={0.5} position={[2.2, 2.1, -2.8]} color="#bfdbfe" />
+                      <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
+                        <planeGeometry args={[12, 12]} />
+                        <meshStandardMaterial color="#d6deea" roughness={0.78} metalness={0.08} />
+                      </mesh>
+
+                      {hasRobotModelAsset ? (
+                        <ModelErrorBoundary fallback={<Arm3D joints={displayJoints} grip={0.7} />} onError={() => setModelLoadFailed(true)}>
+                          <Suspense fallback={<Arm3D joints={displayJoints} grip={0.7} />}>
+                            <RobotModelAsset joints={displayJoints} onReady={() => setModelReady(true)} />
+                          </Suspense>
+                        </ModelErrorBoundary>
+                      ) : (
+                        <Arm3D joints={displayJoints} grip={0.7} />
+                      )}
+                      <ContactShadows
+                        position={[0, 0, 0]}
+                        opacity={0.55}
+                        scale={8.8}
+                        blur={2.8}
+                        far={3.8}
+                        color="#1e293b"
+                      />
+                      <OrbitControls makeDefault enablePan={false} target={[0, 1.2, 0]} minDistance={2.8} maxDistance={11} />
+                    </Canvas>
+                  </div>
+                </Card>
+              </Grid>
+
+              <Grid item xs={12} md={3}>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={6} md={12}>
+                    <Card style={{ padding: 14, borderRadius: 14 }}>
+                      <p style={{ margin: 0, color: "#475569" }}>平均误码率 BER</p>
+                      <div style={{ fontSize: 38, fontWeight: 700, color: berColor }}>{(telemetry.averageBer * 100).toFixed(3)}%</div>
+                      <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
+                        最近一次 BER：{(telemetry.lastBer * 100).toFixed(3)}%
+                      </p>
+                    </Card>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={12}>
+                    <Card style={{ padding: 14, borderRadius: 14 }}>
+                      <p style={{ margin: 0, color: "#475569" }}>无线链路处理时延</p>
+                      <div style={{ fontSize: 38, fontWeight: 700, color: wirelessDelayColor }}>
+                        {telemetry.wirelessDelayMs.toFixed(1)} ms
+                      </div>
+                      <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
+                        累计无线时延：{telemetry.totalWirelessDelayMs.toFixed(1)} ms
+                      </p>
+                    </Card>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={12}>
+                    <Card style={{ padding: 14, borderRadius: 14 }}>
+                      <p style={{ margin: 0, color: "#475569" }}>轨迹误差均值</p>
+                      <div style={{ fontSize: 38, fontWeight: 700, color: trajectoryErrorColor }}>
+                        {(telemetry.trajectoryErrorMean * 1000).toFixed(2)} mrad
+                      </div>
+                      <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
+                        传输次数：{telemetry.transmissionCount}
+                      </p>
+                    </Card>
+                  </Grid>
+                  <Grid item xs={12} sm={6} md={12}>
+                    <Card style={{ padding: 14, borderRadius: 14 }}>
+                      <p style={{ margin: 0, color: "#475569" }}>实验运行状态</p>
+                      <div style={{ fontSize: 34, fontWeight: 700, color: "#0f172a" }}>{telemetry.totalRunTimeS.toFixed(1)} s</div>
+                      <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
+                        模式：{telemetry.wirelessMode} | Eb/No：{telemetry.ebnoDb.toFixed(1)} dB | 物理引擎：{telemetry.physicsMode}
+                      </p>
+                      <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12 }}>
+                        队列积压：{telemetry.queuePending}
+                      </p>
+                    </Card>
+                  </Grid>
+                </Grid>
+              </Grid>
+            </Grid>
+
+            <Card style={{ marginTop: 12, padding: 14, borderRadius: 14 }}>
+              <h3 style={{ marginTop: 0, marginBottom: 10 }}>快速说明</h3>
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} md={4}>
+                  <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
+                    <p style={{ margin: 0, color: "#334155", fontWeight: 700 }}>三种控制方式</p>
+                    <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.5 }}>
+                      关节直接控制最直观；一键姿态预设适合演示；末端目标控制适合指定空间位置。
                     </p>
                   </Card>
-                  <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                      <Button
-                        variant={wirelessModeDraft === "basic_awgn" ? "contained" : "outlined"}
-                        onClick={() => setWirelessModeDraft("basic_awgn")}
-                      >
-                        Basic AWGN
-                      </Button>
-                      <Button
-                        variant={wirelessModeDraft === "advanced_cdl_ofdm" ? "contained" : "outlined"}
-                        onClick={() => setWirelessModeDraft("advanced_cdl_ofdm")}
-                      >
-                        Advanced CDL+OFDM
-                      </Button>
-                    </div>
-                    <p style={{ margin: "0 0 2px", color: "#475569", fontSize: 12 }}>Eb/No: {ebnoDraft.toFixed(1)} dB</p>
-                    <Slider min={-2} max={30} step={0.5} value={ebnoDraft} onChange={(_, v) => setEbnoDraft(v as number)} />
-                    <Button
-                      variant={forceSensorEnabled ? "contained" : "outlined"}
-                      color={forceSensorEnabled ? "secondary" : "primary"}
-                      onClick={() => setForceSensorEnabled((prev) => !prev)}
-                    >
-                      力传感标志：{forceSensorEnabled ? "开启" : "关闭"}
-                    </Button>
-                    <Button variant="contained" onClick={applyWirelessConfig} fullWidth>
-                      应用无线参数
-                    </Button>
-                  </div>
-                </Card>
-
-                <Button variant="text" color="error" onClick={reset}>复位</Button>
-                {WIRELESS_PROFILES.map((profile) => (
-                  <Button
-                    key={profile.key}
-                    variant={activeProfile === profile.key ? "contained" : "outlined"}
-                    onClick={() => applyProfile(profile)}
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
+                    <p style={{ margin: 0, color: "#334155", fontWeight: 700 }}>怎么看指标</p>
+                    <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.5 }}>
+                      BER 越低越好；无线时延越低越快；轨迹误差越低越准。
+                    </p>
+                  </Card>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
+                    <p style={{ margin: 0, color: "#334155", fontWeight: 700 }}>怎么做实验</p>
+                    <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.5 }}>
+                      切换无线模式与 Eb/No 后重复同一动作，对比 BER、时延和误差变化即可。
+                    </p>
+                  </Card>
+                </Grid>
+              </Grid>
+            </Card>
+          </>
+        ) : (
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={8}>
+              <NetworkTopologyMap
+                title="控制端 -> 边缘节点 -> 核心节点 -> 机器人"
+                nodes={TOPOLOGY_NODES}
+                links={topologyLinks}
+                height={560}
+              />
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Card style={{ padding: 14, borderRadius: 14 }}>
+                <h3 style={{ marginTop: 0 }}>链路状态总览</h3>
+                <p style={{ marginTop: 0, color: "#64748b", fontSize: 12 }}>
+                  地图页会根据当前无线参数与实时 BER 自动更新链路指标。
+                </p>
+                <Card variant="outlined" style={{ marginBottom: 10, padding: 10 }}>
+                  <p style={{ margin: 0, color: "#64748b", fontSize: 12 }}>端到端总时延</p>
+                  <div
+                    style={{
+                      fontSize: 34,
+                      fontWeight: 700,
+                      color: totalTopologyLatency >= 220 ? "#b91c1c" : totalTopologyLatency >= 140 ? "#b45309" : "#166534",
+                    }}
                   >
-                    {profile.label}
-                  </Button>
-                ))}
-              </div>
-            </Card>
-          </Grid>
-
-          <Grid item xs={12} md={5}>
-            <Card style={{ padding: 14, borderRadius: 14, position: "sticky", top: 12 }}>
-              <h3 style={{ marginTop: 0 }}>3D机械臂</h3>
-              <p style={{ marginTop: -6, marginBottom: 10, color: "#475569", fontSize: 12 }}>
-                {hasRobotModelAsset
-                  ? modelLoadFailed
-                    ? "真实模型加载失败，已回退内置几何机械臂"
-                    : "已加载真实模型资产（ur5e OBJ）"
-                  : "未检测到模型资产，使用内置几何机械臂"}
-              </p>
-              <div style={{ height: "calc(100vh - 210px)", minHeight: 420, borderRadius: 12, overflow: "hidden", background: "#dbeafe" }}>
-                <Canvas
-                  shadows
-                  gl={{ antialias: true, powerPreference: "high-performance" }}
-                  dpr={[1, 1.35]}
-                >
-                  <PerspectiveCamera makeDefault position={[3.8, 2.55, 4.4]} fov={48} />
-                  <color attach="background" args={["#dbeafe"]} />
-                  <fog attach="fog" args={["#dbeafe", 8, 18]} />
-
-                  <ambientLight intensity={0.25} />
-                  <hemisphereLight intensity={0.5} color="#f8fafc" groundColor="#94a3b8" />
-                  <directionalLight
-                    castShadow
-                    intensity={1.5}
-                    position={[5.5, 7.5, 4.5]}
-                    shadow-mapSize-width={1024}
-                    shadow-mapSize-height={1024}
-                    shadow-bias={-0.00008}
-                  />
-                  <spotLight
-                    castShadow
-                    intensity={0.85}
-                    angle={0.42}
-                    penumbra={0.75}
-                    position={[-3.6, 5.2, 2.5]}
-                    color="#dbeafe"
-                  />
-                  <pointLight intensity={0.5} position={[2.2, 2.1, -2.8]} color="#bfdbfe" />
-                  <mesh receiveShadow rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
-                    <planeGeometry args={[12, 12]} />
-                    <meshStandardMaterial color="#d6deea" roughness={0.78} metalness={0.08} />
-                  </mesh>
-
-                  {hasRobotModelAsset ? (
-                    <ModelErrorBoundary fallback={<Arm3D joints={displayJoints} grip={0.7} />} onError={() => setModelLoadFailed(true)}>
-                      <Suspense fallback={<Arm3D joints={displayJoints} grip={0.7} />}>
-                        <RobotModelAsset joints={displayJoints} onReady={() => setModelReady(true)} />
-                      </Suspense>
-                    </ModelErrorBoundary>
-                  ) : (
-                    <Arm3D joints={displayJoints} grip={0.7} />
-                  )}
-                  <ContactShadows
-                    position={[0, 0, 0]}
-                    opacity={0.55}
-                    scale={8.8}
-                    blur={2.8}
-                    far={3.8}
-                    color="#1e293b"
-                  />
-                  <OrbitControls makeDefault enablePan={false} target={[0, 1.2, 0]} minDistance={2.8} maxDistance={11} />
-                </Canvas>
-              </div>
-            </Card>
-          </Grid>
-
-          <Grid item xs={12} md={3}>
-            <Grid container spacing={2}>
-              <Grid item xs={12} sm={6} md={12}>
-                <Card style={{ padding: 14, borderRadius: 14 }}>
-                  <p style={{ margin: 0, color: "#475569" }}>平均误码率 BER</p>
-                  <div style={{ fontSize: 38, fontWeight: 700, color: berColor }}>{(telemetry.averageBer * 100).toFixed(3)}%</div>
-                  <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
-                    最近一次 BER：{(telemetry.lastBer * 100).toFixed(3)}%
-                  </p>
-                </Card>
-              </Grid>
-              <Grid item xs={12} sm={6} md={12}>
-                <Card style={{ padding: 14, borderRadius: 14 }}>
-                  <p style={{ margin: 0, color: "#475569" }}>无线链路处理时延</p>
-                  <div style={{ fontSize: 38, fontWeight: 700, color: wirelessDelayColor }}>
-                    {telemetry.wirelessDelayMs.toFixed(1)} ms
+                    {totalTopologyLatency.toFixed(1)} ms
                   </div>
-                  <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
-                    累计无线时延：{telemetry.totalWirelessDelayMs.toFixed(1)} ms
-                  </p>
                 </Card>
-              </Grid>
-              <Grid item xs={12} sm={6} md={12}>
-                <Card style={{ padding: 14, borderRadius: 14 }}>
-                  <p style={{ margin: 0, color: "#475569" }}>轨迹误差均值</p>
-                  <div style={{ fontSize: 38, fontWeight: 700, color: trajectoryErrorColor }}>
-                    {(telemetry.trajectoryErrorMean * 1000).toFixed(2)} mrad
+                <Card variant="outlined" style={{ marginBottom: 10, padding: 10 }}>
+                  <p style={{ margin: 0, color: "#64748b", fontSize: 12 }}>平均丢包率</p>
+                  <div
+                    style={{
+                      fontSize: 34,
+                      fontWeight: 700,
+                      color: averageTopologyLoss >= 0.05 ? "#b91c1c" : averageTopologyLoss >= 0.02 ? "#b45309" : "#166534",
+                    }}
+                  >
+                    {(averageTopologyLoss * 100).toFixed(2)}%
                   </div>
-                  <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
-                    传输次数：{telemetry.transmissionCount}
-                  </p>
                 </Card>
-              </Grid>
-              <Grid item xs={12} sm={6} md={12}>
-                <Card style={{ padding: 14, borderRadius: 14 }}>
-                  <p style={{ margin: 0, color: "#475569" }}>实验运行状态</p>
-                  <div style={{ fontSize: 34, fontWeight: 700, color: "#0f172a" }}>{telemetry.totalRunTimeS.toFixed(1)} s</div>
-                  <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
-                    模式：{telemetry.wirelessMode} | Eb/No：{telemetry.ebnoDb.toFixed(1)} dB | 物理引擎：{telemetry.physicsMode}
-                  </p>
-                  <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12 }}>
-                    队列积压：{telemetry.queuePending}
-                  </p>
+                <Card variant="outlined" style={{ padding: 10 }}>
+                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>链路明细</p>
+                  {topologyLinks.map((link) => (
+                    <p key={link.id} style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
+                      {link.id}: {link.latencyMs.toFixed(1)} ms | {(link.packetLoss * 100).toFixed(2)}% loss | {link.jitterMs.toFixed(1)} ms jitter
+                    </p>
+                  ))}
                 </Card>
-              </Grid>
-            </Grid>
-          </Grid>
-        </Grid>
-
-        <Card style={{ marginTop: 12, padding: 14, borderRadius: 14 }}>
-          <h3 style={{ marginTop: 0, marginBottom: 10 }}>快速说明</h3>
-          <Grid container spacing={1.5}>
-            <Grid item xs={12} md={4}>
-              <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
-                <p style={{ margin: 0, color: "#334155", fontWeight: 700 }}>三种控制方式</p>
-                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.5 }}>
-                  关节直接控制最直观；一键姿态预设适合演示；末端目标控制适合指定空间位置。
-                </p>
-              </Card>
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
-                <p style={{ margin: 0, color: "#334155", fontWeight: 700 }}>怎么看指标</p>
-                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.5 }}>
-                  BER 越低越好；无线时延越低越快；轨迹误差越低越准。
-                </p>
-              </Card>
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
-                <p style={{ margin: 0, color: "#334155", fontWeight: 700 }}>怎么做实验</p>
-                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12, lineHeight: 1.5 }}>
-                  切换无线模式与 Eb/No 后重复同一动作，对比 BER、时延和误差变化即可。
-                </p>
               </Card>
             </Grid>
           </Grid>
-        </Card>
+        )}
       </div>
     </div>
   );

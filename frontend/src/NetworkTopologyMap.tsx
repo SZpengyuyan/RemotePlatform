@@ -8,6 +8,9 @@ export type TopologyNode = {
   role: "sender" | "router" | "receiver";
   lat: number;
   lng: number;
+  processingDelayMs?: number;
+  busyPercent?: number;
+  queueDepth?: number;
 };
 
 export type TopologyLink = {
@@ -43,6 +46,12 @@ function nodeRadius(role: TopologyNode["role"]): number {
   return 9;
 }
 
+function routerBusyColor(busyPercent = 0): string {
+  if (busyPercent >= 80) return "#b91c1c";
+  if (busyPercent >= 55) return "#b45309";
+  return "#0f766e";
+}
+
 export default function NetworkTopologyMap({
   title = "网络路径地图",
   nodes,
@@ -56,7 +65,7 @@ export default function NetworkTopologyMap({
     <Card style={{ borderRadius: 14, padding: 12 }}>
       <h3 style={{ marginTop: 0, marginBottom: 8 }}>{title}</h3>
       <p style={{ margin: "0 0 10px", color: "#475569", fontSize: 12 }}>
-        绿色代表低时延，橙色代表中时延，红色代表高时延；虚线表示丢包偏高。
+        绿色代表低时延，橙色代表中时延，红色代表高时延；虚线表示丢包偏高；路由器外圈颜色代表繁忙度。
       </p>
 
       <div style={{ position: "relative", height, borderRadius: 12, overflow: "hidden" }}>
@@ -112,11 +121,37 @@ export default function NetworkTopologyMap({
                 fillOpacity: 0.95,
               }}
             >
-              <Tooltip direction="top" offset={[0, -4]}>
+              <Tooltip direction={node.role === "router" ? "right" : "top"} offset={node.role === "router" ? [10, 0] : [0, -4]} permanent={node.role === "router"}>
                 {node.name}
+                {node.role === "router" ? (
+                  <>
+                    <br />
+                    节点时延: {(node.processingDelayMs ?? 0).toFixed(1)} ms
+                    <br />
+                    繁忙度: {(node.busyPercent ?? 0).toFixed(0)}%
+                    <br />
+                    排队: {node.queueDepth ?? 0}
+                  </>
+                ) : null}
               </Tooltip>
             </CircleMarker>
           ))}
+
+          {nodes
+            .filter((node) => node.role === "router")
+            .map((node) => (
+              <CircleMarker
+                key={`${node.id}-busy-halo`}
+                center={[node.lat, node.lng]}
+                radius={14}
+                pathOptions={{
+                  color: routerBusyColor(node.busyPercent),
+                  weight: 3,
+                  fillOpacity: 0,
+                  opacity: 0.92,
+                }}
+              />
+            ))}
         </MapContainer>
 
         <div
@@ -134,7 +169,7 @@ export default function NetworkTopologyMap({
         >
           Sender: 蓝色点
           <br />
-          Router: 青色点
+          Router: 青色点 + 繁忙度外圈
           <br />
           Receiver: 紫色点
         </div>

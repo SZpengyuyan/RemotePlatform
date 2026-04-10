@@ -10,7 +10,7 @@ type LinkSeed = {
   baseJitterMs: number;
 };
 
-const TOPOLOGY_NODES: TopologyNode[] = [
+const BASE_TOPOLOGY_NODES: TopologyNode[] = [
   { id: "client", name: "控制端 Client", role: "sender", lat: 31.2304, lng: 121.4737 },
   { id: "edge", name: "边缘节点 Edge", role: "router", lat: 30.5728, lng: 104.0668 },
   { id: "core", name: "核心节点 Core", role: "router", lat: 39.9042, lng: 116.4074 },
@@ -65,6 +65,41 @@ function makeLinks(profile: NetworkProfile, tick: number): TopologyLink[] {
   });
 }
 
+function makeNodesWithRouterStatus(links: TopologyLink[], tick: number): TopologyNode[] {
+  const edgeIn = links.find((item) => item.id === "client-edge");
+  const edgeOut = links.find((item) => item.id === "edge-core");
+  const coreIn = links.find((item) => item.id === "edge-core");
+  const coreOut = links.find((item) => item.id === "core-robot");
+
+  const edgeDelay = ((edgeIn?.latencyMs ?? 24) + (edgeOut?.latencyMs ?? 34)) * 0.5;
+  const coreDelay = ((coreIn?.latencyMs ?? 32) + (coreOut?.latencyMs ?? 36)) * 0.5;
+  const edgeLoss = ((edgeIn?.packetLoss ?? 0.004) + (edgeOut?.packetLoss ?? 0.006)) * 0.5;
+  const coreLoss = ((coreIn?.packetLoss ?? 0.005) + (coreOut?.packetLoss ?? 0.007)) * 0.5;
+
+  const edgeBusy = clamp(20 + edgeDelay * 0.72 + edgeLoss * 1100 + Math.sin(tick * 0.35) * 8, 6, 98);
+  const coreBusy = clamp(26 + coreDelay * 0.66 + coreLoss * 1250 + Math.cos(tick * 0.3) * 9, 8, 99);
+
+  return BASE_TOPOLOGY_NODES.map((node) => {
+    if (node.id === "edge") {
+      return {
+        ...node,
+        processingDelayMs: edgeDelay,
+        busyPercent: edgeBusy,
+        queueDepth: Math.round(edgeBusy / 7),
+      };
+    }
+    if (node.id === "core") {
+      return {
+        ...node,
+        processingDelayMs: coreDelay,
+        busyPercent: coreBusy,
+        queueDepth: Math.round(coreBusy / 6),
+      };
+    }
+    return node;
+  });
+}
+
 export default function NetworkTopologyPreview() {
   const [profile, setProfile] = useState<NetworkProfile>("wifi");
   const [tick, setTick] = useState(1);
@@ -75,6 +110,8 @@ export default function NetworkTopologyPreview() {
   }, []);
 
   const links = useMemo(() => makeLinks(profile, tick), [profile, tick]);
+  const nodes = useMemo(() => makeNodesWithRouterStatus(links, tick), [links, tick]);
+  const routerNodes = useMemo(() => nodes.filter((item) => item.role === "router"), [nodes]);
   const totalLatency = links.reduce((sum, item) => sum + item.latencyMs, 0);
   const avgLoss = links.reduce((sum, item) => sum + item.packetLoss, 0) / links.length;
 
@@ -90,7 +127,7 @@ export default function NetworkTopologyPreview() {
 
         <Grid container spacing={2}>
           <Grid item xs={12} md={8}>
-            <NetworkTopologyMap title="控制端 -> 边缘节点 -> 核心节点 -> 机器人" nodes={TOPOLOGY_NODES} links={links} height={540} />
+            <NetworkTopologyMap title="控制端 -> 边缘节点 -> 核心节点 -> 机器人" nodes={nodes} links={links} height={540} />
           </Grid>
 
           <Grid item xs={12} md={4}>
@@ -123,6 +160,28 @@ export default function NetworkTopologyPreview() {
                     {link.id}: {link.latencyMs.toFixed(1)} ms | {(link.packetLoss * 100).toFixed(2)}% loss | {link.jitterMs.toFixed(1)} ms jitter
                   </p>
                 ))}
+              </Card>
+
+              <Card variant="outlined" style={{ marginTop: 10, padding: 10 }}>
+                <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>路由器状态</p>
+                {routerNodes.map((node) => (
+                  <p key={node.id} style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
+                    {node.name}: 节点时延 {(node.processingDelayMs ?? 0).toFixed(1)} ms | 繁忙度 {(node.busyPercent ?? 0).toFixed(0)}% | 排队 {node.queueDepth ?? 0}
+                  </p>
+                ))}
+              </Card>
+
+              <Card variant="outlined" style={{ marginTop: 10, padding: 10, background: "#f8fafc" }}>
+                <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>概念解释</p>
+                <p style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
+                  路由器在这里不是现实中的建筑位置，而是网络拓扑中的中转节点，用来表示数据从控制端到机器人经过了哪里。
+                </p>
+                <p style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
+                  节点时延表示路由器处理和转发数据的时间，繁忙度表示当前节点压力，排队数表示暂时等待处理的请求数量。
+                </p>
+                <p style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
+                  外圈颜色是为了快速识别瓶颈：越偏红，说明该节点越忙、越可能成为网络中继瓶颈。
+                </p>
               </Card>
             </Card>
           </Grid>

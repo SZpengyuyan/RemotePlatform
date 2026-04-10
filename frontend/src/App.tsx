@@ -132,7 +132,7 @@ function metricColor(value: number, warn: number, danger: number, inverse = fals
   return "#166534";
 }
 
-const TOPOLOGY_NODES: TopologyNode[] = [
+const BASE_TOPOLOGY_NODES: TopologyNode[] = [
   { id: "client", name: "控制端 Client", role: "sender", lat: 31.2304, lng: 121.4737 },
   { id: "edge", name: "边缘节点 Edge", role: "router", lat: 30.5728, lng: 104.0668 },
   { id: "core", name: "核心节点 Core", role: "router", lat: 39.9042, lng: 116.4074 },
@@ -181,6 +181,44 @@ function buildTopologyLinks(telemetry: Telemetry): TopologyLink[] {
       jitterMs: clampRange(coreRobotLatency * 0.17, 1.3, 32),
     },
   ];
+}
+
+function buildTopologyNodes(telemetry: Telemetry, links: TopologyLink[]): TopologyNode[] {
+  const edgeIn = links.find((item) => item.id === "client-edge");
+  const edgeOut = links.find((item) => item.id === "edge-core");
+  const coreIn = links.find((item) => item.id === "edge-core");
+  const coreOut = links.find((item) => item.id === "core-robot");
+
+  const edgeDelay = ((edgeIn?.latencyMs ?? 24) + (edgeOut?.latencyMs ?? 32)) * 0.5;
+  const coreDelay = ((coreIn?.latencyMs ?? 32) + (coreOut?.latencyMs ?? 36)) * 0.5;
+
+  const edgeLoss = ((edgeIn?.packetLoss ?? 0.004) + (edgeOut?.packetLoss ?? 0.006)) * 0.5;
+  const coreLoss = ((coreIn?.packetLoss ?? 0.005) + (coreOut?.packetLoss ?? 0.007)) * 0.5;
+
+  const queueWeight = clampRange(telemetry.queuePending / 20, 0, 1.25);
+  const modeWeight = telemetry.wirelessMode === "advanced_cdl_ofdm" ? 1.1 : 0.95;
+  const edgeBusy = clampRange(24 + edgeDelay * 0.58 + edgeLoss * 1100 + queueWeight * 22 + modeWeight * 4, 8, 99);
+  const coreBusy = clampRange(22 + coreDelay * 0.63 + coreLoss * 1250 + queueWeight * 28 + modeWeight * 5, 10, 99);
+
+  return BASE_TOPOLOGY_NODES.map((node) => {
+    if (node.id === "edge") {
+      return {
+        ...node,
+        processingDelayMs: edgeDelay,
+        busyPercent: edgeBusy,
+        queueDepth: Math.round((telemetry.queuePending + edgeBusy / 8) * 0.7),
+      };
+    }
+    if (node.id === "core") {
+      return {
+        ...node,
+        processingDelayMs: coreDelay,
+        busyPercent: coreBusy,
+        queueDepth: Math.round((telemetry.queuePending + coreBusy / 7) * 0.9),
+      };
+    }
+    return node;
+  });
 }
 
 function Arm3D({ joints, grip }: { joints: number[]; grip: number }) {
@@ -679,6 +717,8 @@ export default function App() {
     [telemetry.trajectoryErrorMean]
   );
   const topologyLinks = useMemo(() => buildTopologyLinks(telemetry), [telemetry]);
+  const topologyNodes = useMemo(() => buildTopologyNodes(telemetry, topologyLinks), [telemetry, topologyLinks]);
+  const routerNodes = useMemo(() => topologyNodes.filter((item) => item.role === "router"), [topologyNodes]);
   const totalTopologyLatency = useMemo(
     () => topologyLinks.reduce((sum, link) => sum + link.latencyMs, 0),
     [topologyLinks]
@@ -1006,7 +1046,7 @@ export default function App() {
             <Grid item xs={12} md={8}>
               <NetworkTopologyMap
                 title="控制端 -> 边缘节点 -> 核心节点 -> 机器人"
-                nodes={TOPOLOGY_NODES}
+                nodes={topologyNodes}
                 links={topologyLinks}
                 height={560}
               />
@@ -1048,6 +1088,28 @@ export default function App() {
                       {link.id}: {link.latencyMs.toFixed(1)} ms | {(link.packetLoss * 100).toFixed(2)}% loss | {link.jitterMs.toFixed(1)} ms jitter
                     </p>
                   ))}
+                </Card>
+
+                <Card variant="outlined" style={{ marginTop: 10, padding: 10 }}>
+                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>路由器状态</p>
+                  {routerNodes.map((node) => (
+                    <p key={node.id} style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
+                      {node.name}: 节点时延 {(node.processingDelayMs ?? 0).toFixed(1)} ms | 繁忙度 {(node.busyPercent ?? 0).toFixed(0)}% | 排队 {node.queueDepth ?? 0}
+                    </p>
+                  ))}
+                </Card>
+
+                <Card variant="outlined" style={{ marginTop: 10, padding: 10, background: "#f8fafc" }}>
+                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>概念解释</p>
+                  <p style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
+                    路由器位置：表示网络中的中继节点，不一定是现实机房地址，主要用来说明数据经过哪里。
+                  </p>
+                  <p style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
+                    节点时延：表示路由器处理和转发数据所花的时间，越大说明节点越慢。
+                  </p>
+                  <p style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
+                    繁忙度：表示当前路由器处理压力，外圈越偏红，说明越接近拥塞。
+                  </p>
                 </Card>
               </Card>
             </Grid>

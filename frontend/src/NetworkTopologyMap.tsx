@@ -58,6 +58,7 @@ export default function NetworkTopologyMap({
   links,
   height = 420,
 }: NetworkTopologyMapProps) {
+  const hasRouter = nodes.some((node) => node.role === "router");
   const centerLat = nodes.reduce((sum, n) => sum + n.lat, 0) / Math.max(1, nodes.length);
   const centerLng = nodes.reduce((sum, n) => sum + n.lng, 0) / Math.max(1, nodes.length);
 
@@ -65,7 +66,9 @@ export default function NetworkTopologyMap({
     <Card style={{ borderRadius: 14, padding: 12 }}>
       <h3 style={{ marginTop: 0, marginBottom: 8 }}>{title}</h3>
       <p style={{ margin: "0 0 10px", color: "#475569", fontSize: 12 }}>
-        绿色代表低时延，橙色代表中时延，红色代表高时延；虚线表示丢包偏高；路由器外圈颜色代表繁忙度。
+        {hasRouter
+          ? "绿色代表低时延，橙色代表中时延，红色代表高时延；虚线表示丢包偏高；路由器外圈颜色代表繁忙度。"
+          : "绿色代表低时延，橙色代表中时延，红色代表高时延；虚线表示丢包偏高。"}
       </p>
 
       <div style={{ position: "relative", height, borderRadius: 12, overflow: "hidden" }}>
@@ -168,8 +171,12 @@ export default function NetworkTopologyMap({
           }}
         >
           Sender: 蓝色点
-          <br />
-          Router: 青色点 + 繁忙度外圈
+          {hasRouter ? (
+            <>
+              <br />
+              Router: 青色点 + 繁忙度外圈
+            </>
+          ) : null}
           <br />
           Receiver: 紫色点
         </div>

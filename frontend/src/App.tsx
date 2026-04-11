@@ -133,10 +133,8 @@ function metricColor(value: number, warn: number, danger: number, inverse = fals
 }
 
 const BASE_TOPOLOGY_NODES: TopologyNode[] = [
-  { id: "client", name: "控制端 Client", role: "sender", lat: 31.2304, lng: 121.4737 },
-  { id: "edge", name: "边缘节点 Edge", role: "router", lat: 30.5728, lng: 104.0668 },
-  { id: "core", name: "核心节点 Core", role: "router", lat: 39.9042, lng: 116.4074 },
-  { id: "robot", name: "机器人 Robot", role: "receiver", lat: 22.5431, lng: 114.0579 },
+  { id: "sender", name: "发送端 / 人", role: "sender", lat: 31.2304, lng: 121.4737 },
+  { id: "receiver", name: "接收端 / 机械臂", role: "receiver", lat: 22.5431, lng: 114.0579 },
 ];
 
 function clampRange(value: number, min: number, max: number): number {
@@ -149,76 +147,19 @@ function buildTopologyLinks(telemetry: Telemetry): TopologyLink[] {
   const baseDelay = Math.max(18, telemetry.wirelessDelayMs || 42);
   const berFactor = clampRange(1 + telemetry.averageBer * 32, 0.8, 2.5);
 
-  const clientEdgeLatency = baseDelay * 0.33 * modeFactor * berFactor * (1.2 - qualityFactor * 0.4);
-  const edgeCoreLatency = baseDelay * 0.42 * modeFactor * berFactor * (1.25 - qualityFactor * 0.35);
-  const coreRobotLatency = baseDelay * 0.38 * modeFactor * berFactor * (1.2 - qualityFactor * 0.3);
-
+  const endToEndLatency = baseDelay * modeFactor * berFactor * (1.18 - qualityFactor * 0.36);
   const lossBase = clampRange(telemetry.averageBer * 0.72 + (1 - qualityFactor) * 0.03, 0.002, 0.1);
 
   return [
     {
-      id: "client-edge",
-      from: "client",
-      to: "edge",
-      latencyMs: clampRange(clientEdgeLatency, 8, 180),
-      packetLoss: clampRange(lossBase * 0.6, 0.001, 0.09),
-      jitterMs: clampRange(clientEdgeLatency * 0.16, 1.2, 30),
-    },
-    {
-      id: "edge-core",
-      from: "edge",
-      to: "core",
-      latencyMs: clampRange(edgeCoreLatency, 10, 220),
-      packetLoss: clampRange(lossBase * 1.25, 0.002, 0.12),
-      jitterMs: clampRange(edgeCoreLatency * 0.18, 1.5, 35),
-    },
-    {
-      id: "core-robot",
-      from: "core",
-      to: "robot",
-      latencyMs: clampRange(coreRobotLatency, 9, 200),
-      packetLoss: clampRange(lossBase * 0.95, 0.001, 0.1),
-      jitterMs: clampRange(coreRobotLatency * 0.17, 1.3, 32),
+      id: "end-to-end",
+      from: "sender",
+      to: "receiver",
+      latencyMs: clampRange(endToEndLatency, 12, 260),
+      packetLoss: clampRange(lossBase, 0.001, 0.12),
+      jitterMs: clampRange(endToEndLatency * 0.17, 1.4, 38),
     },
   ];
-}
-
-function buildTopologyNodes(telemetry: Telemetry, links: TopologyLink[]): TopologyNode[] {
-  const edgeIn = links.find((item) => item.id === "client-edge");
-  const edgeOut = links.find((item) => item.id === "edge-core");
-  const coreIn = links.find((item) => item.id === "edge-core");
-  const coreOut = links.find((item) => item.id === "core-robot");
-
-  const edgeDelay = ((edgeIn?.latencyMs ?? 24) + (edgeOut?.latencyMs ?? 32)) * 0.5;
-  const coreDelay = ((coreIn?.latencyMs ?? 32) + (coreOut?.latencyMs ?? 36)) * 0.5;
-
-  const edgeLoss = ((edgeIn?.packetLoss ?? 0.004) + (edgeOut?.packetLoss ?? 0.006)) * 0.5;
-  const coreLoss = ((coreIn?.packetLoss ?? 0.005) + (coreOut?.packetLoss ?? 0.007)) * 0.5;
-
-  const queueWeight = clampRange(telemetry.queuePending / 20, 0, 1.25);
-  const modeWeight = telemetry.wirelessMode === "advanced_cdl_ofdm" ? 1.1 : 0.95;
-  const edgeBusy = clampRange(24 + edgeDelay * 0.58 + edgeLoss * 1100 + queueWeight * 22 + modeWeight * 4, 8, 99);
-  const coreBusy = clampRange(22 + coreDelay * 0.63 + coreLoss * 1250 + queueWeight * 28 + modeWeight * 5, 10, 99);
-
-  return BASE_TOPOLOGY_NODES.map((node) => {
-    if (node.id === "edge") {
-      return {
-        ...node,
-        processingDelayMs: edgeDelay,
-        busyPercent: edgeBusy,
-        queueDepth: Math.round((telemetry.queuePending + edgeBusy / 8) * 0.7),
-      };
-    }
-    if (node.id === "core") {
-      return {
-        ...node,
-        processingDelayMs: coreDelay,
-        busyPercent: coreBusy,
-        queueDepth: Math.round((telemetry.queuePending + coreBusy / 7) * 0.9),
-      };
-    }
-    return node;
-  });
 }
 
 function Arm3D({ joints, grip }: { joints: number[]; grip: number }) {
@@ -717,8 +658,7 @@ export default function App() {
     [telemetry.trajectoryErrorMean]
   );
   const topologyLinks = useMemo(() => buildTopologyLinks(telemetry), [telemetry]);
-  const topologyNodes = useMemo(() => buildTopologyNodes(telemetry, topologyLinks), [telemetry, topologyLinks]);
-  const routerNodes = useMemo(() => topologyNodes.filter((item) => item.role === "router"), [topologyNodes]);
+  const topologyNodes = BASE_TOPOLOGY_NODES;
   const totalTopologyLatency = useMemo(
     () => topologyLinks.reduce((sum, link) => sum + link.latencyMs, 0),
     [topologyLinks]
@@ -1045,7 +985,7 @@ export default function App() {
           <Grid container spacing={2}>
             <Grid item xs={12} md={8}>
               <NetworkTopologyMap
-                title="控制端 -> 边缘节点 -> 核心节点 -> 机器人"
+                title="发送端 -> 网络自动转发 -> 接收端"
                 nodes={topologyNodes}
                 links={topologyLinks}
                 height={560}
@@ -1055,7 +995,7 @@ export default function App() {
               <Card style={{ padding: 14, borderRadius: 14 }}>
                 <h3 style={{ marginTop: 0 }}>链路状态总览</h3>
                 <p style={{ marginTop: 0, color: "#64748b", fontSize: 12 }}>
-                  地图页会根据当前无线参数与实时 BER 自动更新链路指标。
+                  这里只保留发送端和接收端，路由由网络内部自动选择并转发。
                 </p>
                 <Card variant="outlined" style={{ marginBottom: 10, padding: 10 }}>
                   <p style={{ margin: 0, color: "#64748b", fontSize: 12 }}>端到端总时延</p>
@@ -1085,18 +1025,22 @@ export default function App() {
                   <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>链路明细</p>
                   {topologyLinks.map((link) => (
                     <p key={link.id} style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
-                      {link.id}: {link.latencyMs.toFixed(1)} ms | {(link.packetLoss * 100).toFixed(2)}% loss | {link.jitterMs.toFixed(1)} ms jitter
+                      端到端链路: {link.latencyMs.toFixed(1)} ms | {(link.packetLoss * 100).toFixed(2)}% loss | {link.jitterMs.toFixed(1)} ms jitter
                     </p>
                   ))}
                 </Card>
 
                 <Card variant="outlined" style={{ marginTop: 10, padding: 10 }}>
-                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>路由器状态</p>
-                  {routerNodes.map((node) => (
-                    <p key={node.id} style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
-                      {node.name}: 节点时延 {(node.processingDelayMs ?? 0).toFixed(1)} ms | 繁忙度 {(node.busyPercent ?? 0).toFixed(0)}% | 排队 {node.queueDepth ?? 0}
-                    </p>
-                  ))}
+                  <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>路由解释</p>
+                  <p style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
+                    路由器是网络内部基础设施，不是你的业务节点。
+                  </p>
+                  <p style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
+                    这条线表示命令从发送端到机械臂会经过网络自动选路。
+                  </p>
+                  <p style={{ margin: "4px 0", color: "#475569", fontSize: 12, lineHeight: 1.55 }}>
+                    你真正需要关注的是时延、丢包和抖动是否影响操控稳定性。
+                  </p>
                 </Card>
 
                 <Card variant="outlined" style={{ marginTop: 10, padding: 10, background: "#f8fafc" }}>

@@ -19,6 +19,10 @@ type Telemetry = {
   ebnoDb: number;
   physicsMode: string;
   queuePending: number;
+  wirelessEngineRequested: string;
+  wirelessEngineActive: string;
+  wirelessEngineFallback: boolean;
+  wirelessEngineFallbackReason: string;
 };
 
 type WirelessProfile = {
@@ -390,6 +394,10 @@ export default function App() {
     ebnoDb: 10,
     physicsMode: "lightweight",
     queuePending: 0,
+    wirelessEngineRequested: "external",
+    wirelessEngineActive: "unknown",
+    wirelessEngineFallback: false,
+    wirelessEngineFallbackReason: "",
   });
 
   const send = useCallback((payload: object) => {
@@ -583,6 +591,13 @@ export default function App() {
             transmission_count?: number;
           };
           experiment_config?: { wireless_mode?: string; ebno_db?: number; physics_mode?: string; force_sensor_enabled?: boolean };
+          wireless_engine?: {
+            requested?: string;
+            active?: string;
+            using_internal_fallback?: boolean;
+            fallback_reason?: string;
+            external_module_available?: boolean;
+          };
           runtime_stats?: { total_run_time_s?: number; queue_pending?: number };
           queue?: { pending?: number };
           simulation_status?: { joint_positions?: number[] };
@@ -607,6 +622,10 @@ export default function App() {
           ebnoDb: data.experiment_config?.ebno_db ?? 10,
           physicsMode: data.experiment_config?.physics_mode ?? "lightweight",
           queuePending: data.runtime_stats?.queue_pending ?? data.queue?.pending ?? 0,
+          wirelessEngineRequested: data.wireless_engine?.requested ?? "external",
+          wirelessEngineActive: data.wireless_engine?.active ?? "unknown",
+          wirelessEngineFallback: data.wireless_engine?.using_internal_fallback ?? false,
+          wirelessEngineFallbackReason: data.wireless_engine?.fallback_reason ?? "",
         });
 
         const next = data.simulation_status?.joint_positions ?? [];
@@ -942,6 +961,14 @@ export default function App() {
                       <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: 12 }}>
                         模式：{telemetry.wirelessMode} | Eb/No：{telemetry.ebnoDb.toFixed(1)} dB | 物理引擎：{telemetry.physicsMode}
                       </p>
+                      <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12 }}>
+                        无线引擎：{telemetry.wirelessEngineActive}（请求：{telemetry.wirelessEngineRequested}）
+                      </p>
+                      {telemetry.wirelessEngineFallback ? (
+                        <p style={{ margin: "4px 0 0", color: "#b45309", fontSize: 12 }}>
+                          已回退到内部实现：{telemetry.wirelessEngineFallbackReason || "unknown_reason"}
+                        </p>
+                      ) : null}
                       <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12 }}>
                         队列积压：{telemetry.queuePending}
                       </p>

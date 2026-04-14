@@ -15,8 +15,20 @@ from dataclasses import dataclass
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+try:
+    from app.wireless.wireless_module import AdvancedWirelessLink as ExternalAdvancedWirelessLink
+    from app.wireless.wireless_module import WirelessLink as ExternalWirelessLink
+    EXTERNAL_WIRELESS_AVAILABLE = True
+    EXTERNAL_WIRELESS_IMPORT_ERROR = ""
+except Exception as exc:
+    ExternalAdvancedWirelessLink = None
+    ExternalWirelessLink = None
+    EXTERNAL_WIRELESS_AVAILABLE = False
+    EXTERNAL_WIRELESS_IMPORT_ERROR = str(exc)
+
 # Physics engine selection
 PHYSICS_ENGINE = os.getenv("PHYSICS_ENGINE", "lightweight").lower()
+WIRELESS_ENGINE = os.getenv("WIRELESS_ENGINE", "external").lower()
 MUJOCO_AVAILABLE = False
 
 try:
@@ -308,6 +320,7 @@ class SimWireless:
     mode: str = "basic_awgn"
     ebno_db: float = 10.0
     force_sensor_enabled: bool = False
+    engine_requested: str = WIRELESS_ENGINE
 
 
 @dataclass
@@ -383,6 +396,129 @@ def simulate_wireless_transmission(
     return transmitted, ber, processing_delay_ms, trajectory_error_mean
 
 
+class WirelessEngine:
+    def get_name(self) -> str:
+        raise NotImplementedError
+
+    def transmit(
+        self,
+        target_positions: list[float],
+        mode: str,
+        ebno_db: float,
+    ) -> tuple[list[float], float, float, float]:
+        raise NotImplementedError
+
+    def runtime_status(self) -> dict:
+        return {
+            "active": self.get_name(),
+            "using_internal_fallback": False,
+            "fallback_reason": "",
+            "external_module_available": EXTERNAL_WIRELESS_AVAILABLE,
+        }
+
+
+class InternalWirelessEngine(WirelessEngine):
+    def __init__(self, reason: str = ""):
+        self.fallback_reason = reason
+
+    def get_name(self) -> str:
+        return "internal"
+
+    def transmit(
+        self,
+        target_positions: list[float],
+        mode: str,
+        ebno_db: float,
+    ) -> tuple[list[float], float, float, float]:
+        return simulate_wireless_transmission(target_positions, mode, ebno_db)
+
+    def runtime_status(self) -> dict:
+        return {
+            "active": self.get_name(),
+            "using_internal_fallback": False,
+            "fallback_reason": self.fallback_reason,
+            "external_module_available": EXTERNAL_WIRELESS_AVAILABLE,
+        }
+
+
+class ExternalModuleWirelessEngine(WirelessEngine):
+    def __init__(self):
+        if not EXTERNAL_WIRELESS_AVAILABLE or ExternalWirelessLink is None or ExternalAdvancedWirelessLink is None:
+            raise RuntimeError(f"external_wireless_unavailable: {EXTERNAL_WIRELESS_IMPORT_ERROR}")
+
+        self.basic_link = ExternalWirelessLink(coderate=0.5)
+        self.advanced_link = ExternalAdvancedWirelessLink(cdl_model="C", bs_antennas=4)
+        self._tail_joints = [0.0, 0.0]
+        self._using_internal_fallback = False
+        self._fallback_reason = ""
+
+    def get_name(self) -> str:
+        return "external"
+
+    def _to_six_axis(self, target_positions: list[float]) -> list[float]:
+        base = [float(v) for v in target_positions[:4]]
+        if len(base) < 4:
+            base.extend([0.0] * (4 - len(base)))
+        base.extend(self._tail_joints)
+        return base[:6]
+
+    def transmit(
+        self,
+        target_positions: list[float],
+        mode: str,
+        ebno_db: float,
+    ) -> tuple[list[float], float, float, float]:
+        link = self.advanced_link if mode == "advanced_cdl_ofdm" else self.basic_link
+        six_axis = self._to_six_axis(target_positions)
+
+        try:
+            joint_hat, ber, delay_s = link.transmit(six_axis, ebno_db=ebno_db, distance_km=10.0)
+            joint_hat = [clamp_joint_rad(float(v)) for v in joint_hat]
+            if len(joint_hat) >= 6:
+                self._tail_joints = [joint_hat[4], joint_hat[5]]
+
+            transmitted = []
+            for idx, original in enumerate(target_positions):
+                if idx < len(joint_hat):
+                    transmitted.append(joint_hat[idx])
+                else:
+                    transmitted.append(float(original))
+
+            if not transmitted:
+                transmitted = target_positions.copy()
+
+            m = min(len(transmitted), len(target_positions))
+            trajectory_error_mean = (
+                sum(abs(transmitted[i] - float(target_positions[i])) for i in range(m)) / m if m > 0 else 0.0
+            )
+
+            self._using_internal_fallback = False
+            self._fallback_reason = ""
+            return transmitted, float(ber), float(delay_s) * 1000.0, float(trajectory_error_mean)
+        except Exception as exc:
+            self._using_internal_fallback = True
+            self._fallback_reason = f"external_runtime_error:{exc}"
+            return simulate_wireless_transmission(target_positions, mode, ebno_db)
+
+    def runtime_status(self) -> dict:
+        return {
+            "active": self.get_name(),
+            "using_internal_fallback": self._using_internal_fallback,
+            "fallback_reason": self._fallback_reason,
+            "external_module_available": EXTERNAL_WIRELESS_AVAILABLE,
+        }
+
+
+def get_wireless_engine(requested: str) -> WirelessEngine:
+    requested_normalized = (requested or "").strip().lower()
+    if requested_normalized in ("external", "module", "partner"):
+        if EXTERNAL_WIRELESS_AVAILABLE:
+            return ExternalModuleWirelessEngine()
+        return InternalWirelessEngine(reason=f"external_import_failed:{EXTERNAL_WIRELESS_IMPORT_ERROR}")
+
+    return InternalWirelessEngine()
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
@@ -433,6 +569,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
     telemetry_seq = 0
     network = SimNetwork()
     wireless = SimWireless()
+    wireless_engine = get_wireless_engine(wireless.engine_requested)
     queue: list[QueuedCommand] = []
     motion_waypoints: list[list[float]] = []
     queue_seq = 0
@@ -442,6 +579,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
     physics_engine = get_physics_engine()
     print(f"✓ Physics engine initialized: {physics_engine.get_name()}")
     physics_requested = PHYSICS_ENGINE
+    print(f"✓ Wireless engine initialized: {wireless_engine.get_name()}")
 
     cmd_total = 0
     cmd_dropped = 0
@@ -500,7 +638,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
         return True
 
     async def receiver() -> None:
-        nonlocal joints
+        nonlocal joints, wireless_engine
         while True:
             message = await websocket.receive_json()
             msg_type = message.get("type")
@@ -565,6 +703,11 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                 wireless.mode = requested_mode if requested_mode in ("basic_awgn", "advanced_cdl_ofdm") else "basic_awgn"
                 wireless.ebno_db = max(-2.0, min(30.0, float(payload.get("ebno_db", wireless.ebno_db))))
                 wireless.force_sensor_enabled = bool(payload.get("force_sensor_enabled", wireless.force_sensor_enabled))
+                requested_engine = str(payload.get("engine", wireless.engine_requested)).strip().lower()
+                if requested_engine in ("internal", "external", "module", "partner"):
+                    if requested_engine != wireless.engine_requested:
+                        wireless.engine_requested = requested_engine
+                        wireless_engine = get_wireless_engine(wireless.engine_requested)
 
     async def command_processor() -> None:
         nonlocal joints, delay_sum_ms, delay_samples, latest_target_positions
@@ -583,7 +726,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                 continue
 
             cmd = queue.pop(0)
-            transmitted_target, ber, wireless_delay_ms, trajectory_error_mean = simulate_wireless_transmission(
+            transmitted_target, ber, wireless_delay_ms, trajectory_error_mean = wireless_engine.transmit(
                 target_positions=cmd.target_positions,
                 mode=wireless.mode,
                 ebno_db=wireless.ebno_db,
@@ -619,6 +762,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                     "trajectory_error_mean": round(trajectory_error_mean, 5),
                     "wireless_mode": wireless.mode,
                     "ebno_db": round(wireless.ebno_db, 2),
+                    "wireless_engine": wireless_engine.get_name(),
                     "trajectory_steps": steps,
                 }
             )
@@ -656,8 +800,13 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                     "experiment_config": {
                         "wireless_mode": wireless.mode,
                         "ebno_db": round(wireless.ebno_db, 2),
+                        "wireless_engine": wireless_engine.get_name(),
                         "physics_mode": physics_engine.get_name(),
                         "force_sensor_enabled": wireless.force_sensor_enabled,
+                    },
+                    "wireless_engine": {
+                        "requested": wireless.engine_requested,
+                        **wireless_engine.runtime_status(),
                     },
                     "runtime_stats": {
                         "total_run_time_s": round(total_run_time_s, 2),

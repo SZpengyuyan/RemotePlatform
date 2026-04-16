@@ -1,5 +1,6 @@
-import { Button, Card, Grid } from "@mui/material";
+import { Button, Card } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
+import useMediaQuery from "@mui/material/useMediaQuery";
 import NetworkTopologyMap, { TopologyLink, TopologyNode } from "./NetworkTopologyMap";
 
 type NetworkProfile = "wifi" | "4g" | "5g";
@@ -114,78 +115,69 @@ export default function NetworkTopologyPreview() {
   const routerNodes = useMemo(() => nodes.filter((item) => item.role === "router"), [nodes]);
   const totalLatency = links.reduce((sum, item) => sum + item.latencyMs, 0);
   const avgLoss = links.reduce((sum, item) => sum + item.packetLoss, 0) / links.length;
+  const isCompactScreen = useMediaQuery("(max-width: 1100px)");
+  const isNarrowScreen = useMediaQuery("(max-width: 780px)");
+  const pagePadding = isNarrowScreen ? 10 : isCompactScreen ? 12 : 16;
+  const pageColumns = isCompactScreen ? "1fr" : "minmax(0, 1.7fr) minmax(290px, 0.9fr)";
+  const metricsColumns = "repeat(auto-fit, minmax(180px, 1fr))";
+  const actionColumns = "repeat(auto-fit, minmax(120px, 1fr))";
 
   return (
-    <div style={{ minHeight: "100vh", padding: 16, background: "linear-gradient(160deg, #f8fafc 0%, #e6fffb 45%, #fef9c3 100%)" }}>
-      <div style={{ margin: "0 auto", maxWidth: 1320 }}>
-        <Card style={{ padding: 14, marginBottom: 12, borderRadius: 14 }}>
-          <h2 style={{ margin: 0 }}>网络路径地图预览（前端独立模式）</h2>
-          <p style={{ marginTop: 8, marginBottom: 0, color: "#334155" }}>
-            这个页面不依赖后端，纯前端模拟链路动态，方便你先看演示效果。
-          </p>
+    <div style={{ minHeight: "100dvh", padding: pagePadding, overflowX: "hidden", overflowY: "auto", background: "linear-gradient(160deg, #f8fafc 0%, #e6fffb 45%, #fef9c3 100%)" }}>
+      <div style={{ margin: "0 auto", maxWidth: 1440, height: "100%", display: "grid", gridTemplateRows: "auto 1fr", gap: 10, minHeight: 0 }}>
+        <Card style={{ padding: 12, borderRadius: 14 }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: "clamp(20px, 2.1vw, 24px)" }}>网络路径地图预览</h2>
+              <p style={{ margin: "6px 0 0", color: "#334155", fontSize: 13, lineHeight: 1.5 }}>独立前端模式，不依赖后端，直接模拟链路动态。</p>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: actionColumns, gap: 8, minWidth: isNarrowScreen ? 0 : 300 }}>
+              <Button variant={profile === "wifi" ? "contained" : "outlined"} onClick={() => setProfile("wifi")}>WiFi</Button>
+              <Button variant={profile === "4g" ? "contained" : "outlined"} onClick={() => setProfile("4g")}>4G</Button>
+              <Button variant={profile === "5g" ? "contained" : "outlined"} onClick={() => setProfile("5g")}>5G</Button>
+            </div>
+          </div>
         </Card>
 
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={8}>
-            <NetworkTopologyMap title="控制端 -> 边缘节点 -> 核心节点 -> 机器人" nodes={nodes} links={links} height={540} />
-          </Grid>
+        <div style={{ minHeight: 0, display: "grid", gridTemplateColumns: pageColumns, gap: 12, alignItems: "stretch" }}>
+          <NetworkTopologyMap
+            title="控制端 -> 边缘节点 -> 核心节点 -> 机器人"
+            nodes={nodes}
+            links={links}
+            height="clamp(360px, 44vh, 520px)"
+          />
 
-          <Grid item xs={12} md={4}>
-            <Card style={{ padding: 14, borderRadius: 14 }}>
-              <h3 style={{ marginTop: 0 }}>网络环境切换</h3>
-              <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr 1fr" }}>
-                <Button variant={profile === "wifi" ? "contained" : "outlined"} onClick={() => setProfile("wifi")}>WiFi</Button>
-                <Button variant={profile === "4g" ? "contained" : "outlined"} onClick={() => setProfile("4g")}>4G</Button>
-                <Button variant={profile === "5g" ? "contained" : "outlined"} onClick={() => setProfile("5g")}>5G</Button>
-              </div>
-
-              <Card variant="outlined" style={{ marginTop: 12, padding: 10 }}>
+          <Card style={{ padding: 12, borderRadius: 14, minHeight: 0, display: "grid", gridTemplateRows: isCompactScreen ? "auto auto auto" : "repeat(2, minmax(0, 1fr)) auto", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: metricsColumns, gap: 8 }}>
+              <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
                 <p style={{ margin: 0, color: "#64748b", fontSize: 12 }}>端到端总时延</p>
-                <div style={{ fontSize: 34, fontWeight: 700, color: totalLatency >= 240 ? "#b91c1c" : totalLatency >= 160 ? "#b45309" : "#166534" }}>
-                  {totalLatency.toFixed(1)} ms
-                </div>
+                <div style={{ fontSize: "clamp(22px, 2.2vw, 30px)", fontWeight: 700, color: totalLatency >= 240 ? "#b91c1c" : totalLatency >= 160 ? "#b45309" : "#166534" }}>{totalLatency.toFixed(1)} ms</div>
               </Card>
-
-              <Card variant="outlined" style={{ marginTop: 10, padding: 10 }}>
+              <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
                 <p style={{ margin: 0, color: "#64748b", fontSize: 12 }}>平均丢包率</p>
-                <div style={{ fontSize: 34, fontWeight: 700, color: avgLoss >= 0.04 ? "#b91c1c" : avgLoss >= 0.02 ? "#b45309" : "#166534" }}>
-                  {(avgLoss * 100).toFixed(2)}%
-                </div>
+                <div style={{ fontSize: "clamp(22px, 2.2vw, 30px)", fontWeight: 700, color: avgLoss >= 0.04 ? "#b91c1c" : avgLoss >= 0.02 ? "#b45309" : "#166534" }}>{(avgLoss * 100).toFixed(2)}%</div>
               </Card>
+            </div>
 
-              <Card variant="outlined" style={{ marginTop: 10, padding: 10 }}>
-                <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>当前链路明细</p>
-                {links.map((link) => (
-                  <p key={link.id} style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
-                    {link.id}: {link.latencyMs.toFixed(1)} ms | {(link.packetLoss * 100).toFixed(2)}% loss | {link.jitterMs.toFixed(1)} ms jitter
-                  </p>
-                ))}
-              </Card>
-
-              <Card variant="outlined" style={{ marginTop: 10, padding: 10 }}>
-                <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>路由器状态</p>
-                {routerNodes.map((node) => (
-                  <p key={node.id} style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
-                    {node.name}: 节点时延 {(node.processingDelayMs ?? 0).toFixed(1)} ms | 繁忙度 {(node.busyPercent ?? 0).toFixed(0)}% | 排队 {node.queueDepth ?? 0}
-                  </p>
-                ))}
-              </Card>
-
-              <Card variant="outlined" style={{ marginTop: 10, padding: 10, background: "#f8fafc" }}>
-                <p style={{ margin: "0 0 6px", color: "#334155", fontWeight: 700 }}>概念解释</p>
-                <p style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
-                  路由器在这里不是现实中的建筑位置，而是网络拓扑中的中转节点，用来表示数据从控制端到机器人经过了哪里。
+            <Card variant="outlined" style={{ padding: 10, background: "#ffffff" }}>
+              <p style={{ margin: "0 0 4px", color: "#334155", fontWeight: 700 }}>当前链路明细</p>
+              {links.map((link) => (
+                <p key={link.id} style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.45 }}>
+                  {link.id}: {link.latencyMs.toFixed(1)} ms | {(link.packetLoss * 100).toFixed(2)}% loss | {link.jitterMs.toFixed(1)} ms jitter
                 </p>
-                <p style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
-                  节点时延表示路由器处理和转发数据的时间，繁忙度表示当前节点压力，排队数表示暂时等待处理的请求数量。
-                </p>
-                <p style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
-                  外圈颜色是为了快速识别瓶颈：越偏红，说明该节点越忙、越可能成为网络中继瓶颈。
-                </p>
-              </Card>
+              ))}
             </Card>
-          </Grid>
-        </Grid>
+
+            <Card variant="outlined" style={{ padding: 10, background: "#f8fafc" }}>
+              <p style={{ margin: "0 0 4px", color: "#334155", fontWeight: 700 }}>路由器状态</p>
+              {routerNodes.map((node) => (
+                <p key={node.id} style={{ margin: "4px 0", fontSize: 12, color: "#475569", lineHeight: 1.45 }}>
+                  {node.name}: {(node.processingDelayMs ?? 0).toFixed(1)} ms | {(node.busyPercent ?? 0).toFixed(0)}% | 队列 {node.queueDepth ?? 0}
+                </p>
+              ))}
+            </Card>
+          </Card>
+        </div>
       </div>
     </div>
   );

@@ -26,7 +26,7 @@ type NetworkTopologyMapProps = {
   title?: string;
   nodes: TopologyNode[];
   links: TopologyLink[];
-  height?: number;
+  height?: number | string;
 };
 
 function linkColor(latencyMs: number): string {
@@ -61,17 +61,18 @@ export default function NetworkTopologyMap({
   const hasRouter = nodes.some((node) => node.role === "router");
   const centerLat = nodes.reduce((sum, n) => sum + n.lat, 0) / Math.max(1, nodes.length);
   const centerLng = nodes.reduce((sum, n) => sum + n.lng, 0) / Math.max(1, nodes.length);
+  const resolvedHeight = typeof height === "number" ? `${height}px` : height;
 
   return (
-    <Card style={{ borderRadius: 14, padding: 12 }}>
+    <Card style={{ borderRadius: 14, padding: 12, minHeight: 0 }}>
       <h3 style={{ marginTop: 0, marginBottom: 8 }}>{title}</h3>
-      <p style={{ margin: "0 0 10px", color: "#475569", fontSize: 12 }}>
+      <p style={{ margin: "0 0 10px", color: "#475569", fontSize: 12, lineHeight: 1.5 }}>
         {hasRouter
           ? "绿色代表低时延，橙色代表中时延，红色代表高时延；虚线表示丢包偏高；路由器外圈颜色代表繁忙度。"
           : "绿色代表低时延，橙色代表中时延，红色代表高时延；虚线表示丢包偏高。"}
       </p>
 
-      <div style={{ position: "relative", height, borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ position: "relative", height: resolvedHeight, minHeight: 0, borderRadius: 12, overflow: "hidden" }}>
         <MapContainer center={[centerLat, centerLng]} zoom={4} style={{ height: "100%", width: "100%" }}>
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -168,6 +169,7 @@ export default function NetworkTopologyMap({
             padding: "8px 10px",
             fontSize: 12,
             lineHeight: 1.5,
+            maxWidth: "min(260px, calc(100% - 24px))",
           }}
         >
           Sender: 蓝色点

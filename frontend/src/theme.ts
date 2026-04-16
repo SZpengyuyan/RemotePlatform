@@ -1,8 +1,8 @@
-import { createTheme } from "@mui/material";
+import { createTheme, responsiveFontSizes } from "@mui/material";
 
 
 // 先建立统一主题，后续每个模块直接复用，避免样式分散。
-export const appTheme = createTheme({
+export const appTheme = responsiveFontSizes(createTheme({
   palette: {
     mode: "light",
     primary: {
@@ -42,4 +42,4 @@ export const appTheme = createTheme({
       },
     },
   },
-});
+}));

@@ -1,0 +1,13 @@
+%!TEX root = ../sztuthesis_main.tex
+\phantomsection
+\addcontentsline{toc}{section}{Abstract}
+
+\keywordsen{Remote robotic arm control; wireless link simulation; topology visualization; system design and implementation}
+\categoryen{TP391}
+\begin{abstracten}
+This thesis presents the design and implementation of a network simulation and visualization platform for remote robotic arm control. The platform integrates frontend interaction, 3D robotic arm rendering, wireless-link simulation, command scheduling, and telemetry feedback into a closed-loop architecture. A WebSocket channel is used for real-time control and state synchronization, while an HTTP endpoint is provided for experiment data export in CSV format.
+
+The implementation supports two wireless simulation modes, basic\_awgn and advanced\_cdl\_ofdm, with configurable Eb/No. Core observable metrics include BER, wireless processing delay, trajectory error, queue backlog, and cumulative runtime counters. The system also includes a topology map that visualizes sender-router-receiver paths with link latency, packet loss, jitter, and router load indicators.
+
+To avoid unsupported claims, this thesis only uses repository-verifiable information. For missing real-world measurements, structured placeholders are explicitly marked as "To Be Supplemented". The resulting thesis framework is maintainable and directly extensible for future work including real-network measurements, larger-scale experiments, and automated evaluation pipelines.
+\end{abstracten}

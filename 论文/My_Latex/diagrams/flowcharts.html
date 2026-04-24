@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>论文流程图总览</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #dbe2ea;
+      --accent: #0f766e;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      color: var(--text);
+      background: linear-gradient(180deg, #eef2f7 0%, #f9fbff 100%);
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px 16px 56px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+    }
+
+    .subtitle {
+      margin: 0 0 20px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: var(--card);
+      padding: 8px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+      color: var(--text);
+    }
+
+    button:hover {
+      border-color: var(--accent);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+    }
+
+    .card h2 {
+      margin: 0 0 6px;
+      font-size: 16px;
+    }
+
+    .meta {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .mermaid {
+      overflow-x: auto;
+      padding: 8px;
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      background: #fcfdff;
+    }
+
+    .tip {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    @media print {
+      .toolbar {
+        display: none;
+      }
+
+      body {
+        background: #fff;
+      }
+
+      .card {
+        break-inside: avoid;
+        box-shadow: none;
+      }
+    }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "default",
+      flowchart: { curve: "basis" }
+    });
+
+    window.expandAll = function () {
+      document.querySelectorAll(".card").forEach((card) => {
+        card.style.gridColumn = "1 / -1";
+      });
+    };
+
+    window.resetLayout = function () {
+      document.querySelectorAll(".card").forEach((card) => {
+        card.style.gridColumn = "";
+      });
+    };
+
+    window.printPage = function () {
+      window.print();
+    };
+  </script>
+</head>
+
+<body>
+  <div class="container">
+    <h1>论文流程图总览</h1>
+    <p class="subtitle">
+      用于生成论文中各章节流程图。每个卡片的标识与正文图号标签一致（例如 fig:intro-problem-space）。
+      建议在浏览器中截图或另存为 PDF/SVG 后，替换到论文图位。
+    </p>
+
+    <div class="toolbar">
+      <button onclick="expandAll()">单列展开</button>
+      <button onclick="resetLayout()">恢复网格</button>
+      <button onclick="printPage()">打印/另存为 PDF</button>
+    </div>
+
+    <div class="grid">
+      <section class="card" id="fig:intro-problem-space">
+        <h2>fig:intro-problem-space 远程机械臂操控问题空间示意</h2>
+        <p class="meta">章节：绪论</p>
+        <pre class="mermaid">flowchart LR
+  U[用户控制输入] --> F[前端控制层]
+  F --> W[WebSocket消息]
+  W --> B[后端仿真与调度]
+  B --> R[机械臂执行]
+  R --> T[遥测回传]
+  T --> F</pre>
+      </section>
+
+      <section class="card" id="fig:intro-thesis-route">
+        <h2>fig:intro-thesis-route 论文章节逻辑关系示意</h2>
+        <p class="meta">章节：绪论</p>
+        <pre class="mermaid">flowchart TD
+  A[需求分析] --> B[系统架构]
+  B --> C[模块设计]
+  C --> D[系统实现]
+  D --> E[实验评估]
+  E --> F[结论与展望]</pre>
+      </section>
+
+      <section class="card" id="fig:req-usecase">
+        <h2>fig:req-usecase 平台需求用例图</h2>
+        <p class="meta">章节：需求分析</p>
+        <pre class="mermaid">flowchart LR
+  User[实验用户] --> U1[发送控制命令]
+  User --> U2[调整无线参数]
+  User --> U3[查看地图与指标]
+  User --> U4[导出CSV]
+  Admin[维护者] --> A1[部署系统]
+  Admin --> A2[切换物理引擎]</pre>
+      </section>
+
+      <section class="card" id="fig:req-validation-flow">
+        <h2>fig:req-validation-flow 需求验证流程</h2>
+        <p class="meta">章节：需求分析</p>
+        <pre class="mermaid">flowchart TD
+  R[需求定义] --> M[消息与接口映射]
+  M --> T[前后端联调]
+  T --> V[指标验证]
+  V --> E[导出实验数据]</pre>
+      </section>
+
+      <section class="card" id="fig:arch-layered">
+        <h2>fig:arch-layered 平台分层架构示意</h2>
+        <p class="meta">章节：系统总体架构</p>
+        <pre class="mermaid">flowchart TB
+  subgraph L1[交互与可视化层]
+    FE[React + Three.js + Leaflet]
+  end
+  subgraph L2[通信层]
+    WS[WebSocket /ws]
+    API[HTTP /health /export/csv]
+  end
+  subgraph L3[业务仿真层]
+    RCV[receiver]
+    Q[queue + congestion penalty]
+    WL[wireless engine]
+    PHY[physics engine]
+    SND[sender]
+  end
+  subgraph L4[部署层]
+    DC[docker compose]
+  end
+  FE <--> WS
+  FE --> API
+  WS --> RCV --> Q --> WL --> PHY --> SND --> WS
+  DC --> FE
+  DC --> RCV</pre>
+      </section>
+
+      <section class="card" id="fig:arch-sequence">
+        <h2>fig:arch-sequence 控制消息时序示意</h2>
+        <p class="meta">章节：系统总体架构</p>
+        <pre class="mermaid">sequenceDiagram
+  participant U as User
+  participant FE as Frontend
+  participant BE as Backend
+  participant W as Wireless
+  participant P as Physics
+  U->>FE: 设置目标与参数
+  FE->>BE: robot_joint_control / robot_ee_control
+  BE->>W: transmit(target, mode, ebno)
+  W-->>BE: transmitted_target, ber, delay
+  BE->>P: step(start, transmitted_target, steps)
+  BE-->>FE: ack + telemetry</pre>
+      </section>
+
+      <section class="card" id="fig:design-module-rel">
+        <h2>fig:design-module-rel 核心模块关系示意</h2>
+        <p class="meta">章节：关键模块设计</p>
+        <pre class="mermaid">flowchart LR
+  C[Control Input] --> Q[Queue Scheduler]
+  Q --> W[Wireless Engine]
+  W --> P[Physics Engine]
+  P --> S[Simulation State]
+  S --> V[3D View]
+  S --> M[Topology Map]</pre>
+      </section>
+
+      <section class="card" id="fig:design-dataflow">
+        <h2>fig:design-dataflow 命令处理数据流示意</h2>
+        <p class="meta">章节：关键模块设计</p>
+        <pre class="mermaid">flowchart TD
+  I[Incoming Command] --> ENQ[enqueue_control_command]
+  ENQ --> DQ[command_processor dequeue]
+  DQ --> TX[wireless_engine.transmit]
+  TX --> WP[physics_engine.step waypoints]
+  WP --> MS[motion_stepper]
+  MS --> OUT[telemetry + csv history]</pre>
+      </section>
+
+      <section class="card" id="fig:impl-backend-tasks">
+        <h2>fig:impl-backend-tasks 后端并发任务关系示意</h2>
+        <p class="meta">章节：系统实现</p>
+        <pre class="mermaid">flowchart LR
+  R[receiver] --> Q[queue]
+  Q --> C[command_processor]
+  C --> M[motion_stepper]
+  M --> J[joint state]
+  J --> S[sender]
+  S --> W[websocket telemetry]</pre>
+      </section>
+
+      <section class="card" id="fig:impl-frontend-layout">
+        <h2>fig:impl-frontend-layout 前端页面模块布局示意</h2>
+        <p class="meta">章节：系统实现</p>
+        <pre class="mermaid">flowchart TB
+  A[控制面板] --> D[状态管理]
+  D --> B[3D机械臂视图]
+  D --> C[指标卡片]
+  D --> E[网络拓扑地图]
+  D --> F[WebSocket通信]</pre>
+      </section>
+
+      <section class="card" id="fig:exp-flow">
+        <h2>fig:exp-flow 实验执行流程示意</h2>
+        <p class="meta">章节：实验设计与评估</p>
+        <pre class="mermaid">flowchart TD
+  S[启动系统] --> C[配置模式与Eb/No]
+  C --> O[发送控制命令]
+  O --> T[采集telemetry]
+  T --> X[导出CSV]
+  X --> A[离线统计与绘图]
+  A --> R[记录结论与局限]</pre>
+      </section>
+
+      <section class="card" id="fig:exp-analysis-template">
+        <h2>fig:exp-analysis-template 实验结果可视化建议</h2>
+        <p class="meta">章节：实验设计与评估</p>
+        <pre class="mermaid">flowchart LR
+  D1[CSV原始数据] --> P1[按模式分组]
+  P1 --> P2[按Eb/No聚合]
+  P2 --> P3[计算均值/方差]
+  P3 --> V1[绘制趋势图]
+  V1 --> R1[结果解释]</pre>
+      </section>
+
+      <section class="card" id="fig:conclusion-loop">
+        <h2>fig:conclusion-loop 研究产出闭环示意</h2>
+        <p class="meta">章节：结论与展望</p>
+        <pre class="mermaid">flowchart TD
+  N[需求定义] --> A[架构设计]
+  A --> I[系统实现]
+  I --> E[实验评估]
+  E --> C[结论与修正]
+  C --> N</pre>
+      </section>
+
+      <section class="card" id="fig:conclusion-roadmap">
+        <h2>fig:conclusion-roadmap 后续研究路线示意</h2>
+        <p class="meta">章节：结论与展望</p>
+        <pre class="mermaid">flowchart LR
+  P1[当前: 仿真闭环] --> P2[下一步: 真实链路测量]
+  P2 --> P3[自动化数据分析]
+  P3 --> P4[多场景泛化评估]</pre>
+      </section>
+    </div>
+
+    <p class="tip">
+      使用建议：
+      1) 打开此页面等待图形渲染完成；
+      2) 浏览器打印为 PDF 或截图导出；
+      3) 将导出图插入论文对应图号位置。
+    </p>
+  </div>
+</body>
+
+</html>

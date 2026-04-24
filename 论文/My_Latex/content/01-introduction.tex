@@ -1,0 +1,72 @@
+%!TEX root = ../sztuthesis_main.tex
+
+\section{绪论}
+
+\subsection{问题定义}
+远程机械臂操控在工业运维、教学实训与远程实验中具有典型应用价值，但其交互体验并不只由控制算法决定，还受网络链路质量与系统实现方式共同影响。当前项目的核心目标是构建一个可运行、可观测、可复现实验流程的平台，用于回答以下工程问题：
+
+（1）当无线链路参数变化时，机械臂操控效果如何变化；
+
+（2）如何在同一系统内统一呈现控制命令、网络状态与机械臂执行结果；
+
+（3）如何在不引入复杂外部依赖的前提下，实现可验证的实验数据导出与分析入口。
+
+本研究限定在仓库当前可验证能力范围内展开，研究对象来源于 RemotePlatform 项目代码与文档\cite{remoteplatform_repo}，论文排版基于 SZTU 学位论文模板\cite{sztu_template_repo}。根据项目说明，现有指标属于仿真链路统计，不是公网真实链路测量值。因此，本文将“工程实现可用性与结构完整性”作为主论证对象，对真实外场测量结论一律标注为“待补充”。
+
+\subsection{设计思路}
+本文采用“闭环链路+分层模块+指标联动”的设计路线：
+
+（1）闭环链路：前端发送控制命令，后端完成排队、无线仿真和轨迹执行，再通过 WebSocket 返回 ack 与 telemetry；
+
+（2）分层模块：将无线仿真、物理执行、可视化展示与部署编排进行职责分离，降低耦合；
+
+（3）指标联动：统一使用 BER、无线处理时延、轨迹误差、队列长度等指标描述网络与控制效果关系。
+
+该思路与项目当前实现相一致：后端提供 /ws 与 /api/v1/experiments/export/csv，前端提供无线模式和 Eb/No 配置面板、3D 机械臂、网络拓扑地图与实时指标卡片。
+
+\subsection{实现细节}
+绪论对应的工程事实锚点如下：
+
+（1）通信机制：后端基于 FastAPI WebSocket 推送 telemetry 并响应 ack；
+
+（2）无线模式：支持 basic\_awgn 与 advanced\_cdl\_ofdm；
+
+（3）控制类型：支持 robot\_joint\_control 与 robot\_ee\_control；
+
+（4）实验导出：支持 CSV 导出接口，字段包含 average\_ber、wireless\_delay\_ms、trajectory\_error\_mean 等。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：研究对象与闭环问题空间。}\\
+上层为用户控制输入；中层为无线链路仿真与命令队列；下层为机械臂执行与状态回传。}}
+\caption{远程机械臂操控问题空间示意}
+\label{fig:intro-problem-space}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:intro-problem-space”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 图意说明：展示论文研究对象不是单一算法模块，而是跨网络与执行环节的系统闭环。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：论文总体章节逻辑图。}\\
+从需求分析到架构设计、模块设计、实现与实验评估，形成可追溯链路。}}
+\caption{论文章节逻辑关系示意}
+\label{fig:intro-thesis-route}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:intro-thesis-route”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 插图位置建议：图~\ref{fig:intro-problem-space} 放在问题定义后；图~\ref{fig:intro-thesis-route} 放在本章末尾，用于承接第2章。
+
+\subsection{本章小结}
+本章明确了研究问题、设计路线与可验证边界，说明本文以系统设计与实现为主线，不对仓库未提供的真实测量数据做推断。后续章节将逐步给出需求约束、架构与模块设计、实现细节及实验模板。
+
+\subsection{事实核对清单}
+（1）已核对：项目存在 WebSocket 实时通信与 ack/telemetry 回传机制；
+
+（2）已核对：项目存在 Basic AWGN 与 Advanced CDL+OFDM 两种无线模式；
+
+（3）已核对：项目存在 CSV 导出接口，字段可用于 BER/时延/轨迹误差分析；
+
+（4）待补充：真实公网链路实测对照数据与跨地域部署实测结果。

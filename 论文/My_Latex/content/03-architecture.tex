@@ -1,0 +1,64 @@
+%!TEX root = ../sztuthesis_main.tex
+
+\section{系统总体架构}
+
+\subsection{问题定义}
+在远程操控系统中，若架构不清晰，常见问题包括：控制链路难以追踪、指标来源不一致、功能迭代相互影响。为避免上述问题，系统必须在架构层建立明确的数据边界、模块边界与运行边界。
+
+\subsection{设计思路}
+本平台采用四层架构：
+
+（1）交互与可视化层（Frontend）：负责控制面板、3D 视图、地图与指标展示；
+
+（2）通信层（WebSocket/HTTP）：负责命令传输、状态推送与实验数据导出；
+
+（3）业务仿真层（Backend Core）：负责命令排队、无线传输仿真、轨迹执行与统计聚合；
+
+（4）部署运行层（Docker Compose）：负责前后端容器化编排。
+
+该分层对应仓库目录结构，便于在不破坏协议的前提下替换单一模块，例如将物理执行从 lightweight 切换到 MuJoCo。
+
+\subsection{实现细节}
+系统在运行时形成两个并行闭环：该通信与服务组织方式实现于 FastAPI 与 WebSocket 能力之上\cite{fastapi_docs}，并由容器编排统一托管\cite{docker_compose_docs}。
+
+（1）控制闭环：命令发送、仿真处理、轨迹执行、状态回传；
+
+（2）观测闭环：遥测生成、前端渲染、参数调节、再次发送命令。
+
+其中，后端内部包含 receiver、command\_processor、motion\_stepper、sender 四个协程任务，各自职责明确并通过共享状态协同。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：系统分层架构图。}\\
+展示前端、通信、后端核心与部署编排的四层关系。}}
+\caption{平台分层架构示意}
+\label{fig:arch-layered}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:arch-layered”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 图意说明：明确系统层次与核心执行路径。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：控制消息时序图。}\\
+体现命令从前端发出到 ack 返回的关键时间点。}}
+\caption{控制消息时序示意}
+\label{fig:arch-sequence}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:arch-sequence”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 插图位置建议：图~\ref{fig:arch-layered} 放在架构说明后，图~\ref{fig:arch-sequence} 放在实现细节小节末尾。
+
+\subsection{本章小结}
+本章给出系统分层架构、任务协同与时序链路，为后续模块级设计提供全局上下文。
+
+\subsection{事实核对清单}
+（1）已核对：后端存在四个并发任务（receiver、command\_processor、motion\_stepper、sender）；
+
+（2）已核对：前端存在 WebSocket 连接、3D 可视化与地图组件；
+
+（3）已核对：Docker Compose 为唯一推荐启动方式；
+
+（4）待补充：生产级高可用部署拓扑与跨节点容灾配置。

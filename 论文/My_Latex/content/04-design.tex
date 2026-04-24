@@ -1,0 +1,83 @@
+%!TEX root = ../sztuthesis_main.tex
+
+\section{关键模块设计}
+
+\subsection{问题定义}
+系统总体架构确定后，仍需回答模块级问题：
+
+（1）无线仿真如何在可计算成本下反映参数变化趋势；
+
+（2）命令队列如何表达拥塞影响；
+
+（3）末端控制如何映射到关节空间；
+
+（4）网络拓扑地图如何将链路质量转化为可理解的视觉信息。
+
+\subsection{设计思路}
+本章采用“抽象接口+策略实现”的方式组织模块设计：
+
+（1）无线模块通过 WirelessEngine 抽象屏蔽 internal/external 差异；
+
+（2）物理执行通过 PhysicsEngine 抽象屏蔽 lightweight/mujoco 差异，其中 MuJoCo 模式对应可选物理引擎路径\cite{mujoco_docs}；
+
+（3）命令调度采用有序队列与拥塞惩罚项；
+
+（4）地图展示采用节点角色与颜色编码，表达路由器状态。
+
+\subsection{实现细节}
+\subsubsection{无线仿真设计}
+无线链路支持 basic\_awgn 与 advanced\_cdl\_ofdm 两种模式。实现中通过 Eb/No 计算基础误码趋势，并结合模式因子形成 bit flip 概率，再统计 BER 与无线处理时延。
+
+\subsubsection{队列与拥塞惩罚设计}
+当队列长度超过阈值后，系统对等待时间加入二次惩罚项：
+
+\begin{equation}
+\Delta t_{cong}=\begin{cases}
+0, & pending\leq 5\\
+(pending-5)^2 \cdot p, & pending>5
+\end{cases}
+\end{equation}
+
+其中，$p$ 为 queue\_penalty\_ms。该设计可将“轻度排队”和“严重积压”区分开来。
+
+\subsubsection{末端控制逆解设计}
+后端提供 solve\_simple\_ik，将目标点 $(x,y,z)$ 与腕部俯仰角映射为 4 关节目标，随后复用轨迹执行链路。该策略与前端输入保持一致，减少协议分支。
+
+\subsubsection{网络拓扑地图设计}
+地图节点区分 sender/router/receiver 三类角色，并叠加链路时延、丢包、抖动提示。路由器外圈颜色反映 busyPercent，辅助定位潜在瓶颈。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：模块关系图。}\\
+展示控制模块、无线模块、物理模块、可视化模块之间的数据依赖。}}
+\caption{核心模块关系示意}
+\label{fig:design-module-rel}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:design-module-rel”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 图意说明：说明模块之间是数据流依赖而非直接 UI 耦合。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：命令处理数据流图。}\\
+展示命令入队、无线处理、轨迹生成和遥测采样路径。}}
+\caption{命令处理数据流示意}
+\label{fig:design-dataflow}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:design-dataflow”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 插图位置建议：图~\ref{fig:design-module-rel} 放在设计思路后，图~\ref{fig:design-dataflow} 放在实现细节后。
+
+\subsection{本章小结}
+本章完成了无线仿真、队列调度、逆解控制和网络地图的模块级设计定义，并给出关键公式与数据流关系。
+
+\subsection{事实核对清单}
+（1）已核对：代码中存在 WirelessEngine 与 PhysicsEngine 抽象；
+
+（2）已核对：队列拥塞惩罚采用溢出量平方项；
+
+（3）已核对：末端控制路径调用轻量 IK 并进入同一队列；
+
+（4）待补充：机械臂真实几何参数标定文档与逆解误差基准数据。

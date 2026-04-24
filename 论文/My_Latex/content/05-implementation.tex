@@ -1,0 +1,98 @@
+%!TEX root = ../sztuthesis_main.tex
+
+\section{系统实现}
+
+\subsection{问题定义}
+模块设计完成后，系统实现阶段需解决两个现实问题：
+
+（1）如何在单仓库内组织前后端工程，使启动和调试流程简洁可复现；
+
+（2）如何保证前端展示指标与后端统计口径一致，避免“界面可见但不可追溯”。
+
+\subsection{设计思路}
+实现策略分为后端实现、前端实现与部署实现三部分：后端框架采用 FastAPI\cite{fastapi_docs}，前端基础采用 React 与 Vite\cite{react_docs,vite_docs}，三维和地图可视化依赖 Three.js / React Three Fiber 与 Leaflet 生态\cite{threejs_docs,r3f_docs,leaflet_docs}。
+
+（1）后端以 FastAPI 为主，WebSocket 驱动实时数据流；
+
+（2）前端以 React + Vite 为主，使用组件化方式组织控制区、3D 区与地图区；
+
+（3）部署层通过 Docker Compose 固化启动入口，实现本地一键复现。
+
+\subsection{实现细节}
+\subsubsection{后端实现要点}
+后端主入口在 app/main.py，关键实现包括：
+
+（1）健康检查接口 /health；
+
+（2）实验导出接口 /api/v1/experiments/export/csv；
+
+（3）WebSocket /ws 统一接收控制、配置消息并推送 telemetry；
+
+（4）实验历史使用长度受限队列缓存，默认上限 5000 条样本。
+
+\subsubsection{前端实现要点}
+前端主业务集中在 App.tsx，主要包含：
+
+（1）无线配置与控制命令发送；
+
+（2）3D 机械臂渲染与模型资产回退逻辑；
+
+（3）网络拓扑地图组件，支持路由器状态可视化；
+
+（4）实时指标卡片，展示 BER、时延、轨迹误差和队列积压。
+
+\subsubsection{部署与运行实现要点}
+项目采用 Docker 容器化，前后端统一由 docker compose up --build 启动\cite{docker_compose_docs}。该方式将依赖、端口和构建流程固定化，降低环境差异带来的不可复现风险。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：后端协程运行图。}\\
+展示 receiver、command processor、motion stepper、sender 的并行关系。}}
+\caption{后端并发任务关系示意}
+\label{fig:impl-backend-tasks}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:impl-backend-tasks”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 图意说明：表明后端不是串行流程，而是多任务协同。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：前端页面模块布局图。}\\
+包含控制区、3D 视图区、指标区和网络地图区。}}
+\caption{前端页面模块布局示意}
+\label{fig:impl-frontend-layout}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:impl-frontend-layout”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 插图位置建议：图~\ref{fig:impl-backend-tasks} 放在后端实现要点后，图~\ref{fig:impl-frontend-layout} 放在前端实现要点后。
+
+\begin{table}[htbp]
+\centering
+\caption{系统实现技术栈与用途}
+\label{tab:impl-stack}
+\begin{tabular}{llll}
+\hline
+层级 & 技术 & 仓库可见用途 & 备注 \\
+\hline
+前端 & React + Vite + TypeScript & 页面交互与构建 & 已在 package.json 声明 \\
+三维渲染 & Three.js / React Three Fiber & 机械臂可视化 & 支持 OBJ 资产加载 \\
+地图可视化 & Leaflet / React-Leaflet & 拓扑与路由器状态显示 & 使用 OSM 瓦片 \\
+后端 & FastAPI + Uvicorn & WebSocket 与 HTTP API & Python 3.11 环境 \\
+部署 & Docker Compose & 一键编排前后端 & 本地统一启动入口 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{本章小结}
+本章从工程实现角度说明了后端并发协同、前端组件化组织与容器化部署方案，形成可复现的开发与运行流程。
+
+\subsection{事实核对清单}
+（1）已核对：后端技术栈与依赖可在 requirements.txt 中验证；
+
+（2）已核对：前端技术栈与依赖可在 package.json 中验证；
+
+（3）已核对：Docker Compose 是项目推荐统一启动方式；
+
+（4）待补充：CI/CD 自动化流水线配置与版本发布记录。

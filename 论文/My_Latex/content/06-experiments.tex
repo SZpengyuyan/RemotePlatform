@@ -1,0 +1,150 @@
+%!TEX root = ../sztuthesis_main.tex
+
+\section{实验设计与评估}
+
+\subsection{问题定义}
+本章目标是验证平台是否能够稳定支撑“参数配置-运行-采样-导出-分析”的实验流程，并观察无线参数变化对 BER、无线处理时延与轨迹误差的影响趋势。根据项目说明，当前数据属于仿真统计，因此本章侧重流程可复现性与趋势分析模板，而非宣称真实公网性能结论。
+
+\subsection{实验目的}
+（1）验证系统在 basic\_awgn 与 advanced\_cdl\_ofdm 模式下可稳定运行；
+
+（2）验证 Eb/No 变化对 BER 与轨迹误差的影响方向；
+
+（3）验证 CSV 导出字段能够支持离线统计和绘图。
+
+\subsection{实验环境}
+\begin{table}[htbp]
+\centering
+\caption{实验环境配置表}
+\label{tab:exp-env}
+\begin{tabular}{ll}
+\hline
+项目 & 配置 \\
+\hline
+操作系统 & Windows（开发机） \\
+容器编排 & Docker Compose \\
+后端服务 & FastAPI + Uvicorn \\
+前端服务 & Vite 构建 + Nginx 静态托管 \\
+物理引擎模式 & lightweight（默认）/ mujoco（可选） \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{变量与指标}
+\subsubsection{自变量}
+（1）无线模式：basic\_awgn、advanced\_cdl\_ofdm；
+
+（2）Eb/No（dB）：按实验组配置（待补充）；
+
+（3）命令类型：robot\_joint\_control、robot\_ee\_control。
+
+\subsubsection{观测指标}
+（1）average\_ber、last\_ber；
+
+（2）wireless\_delay\_ms、total\_wireless\_delay\_ms；
+
+（3）trajectory\_error\_mean；
+
+（4）queue\_pending；
+
+（5）transmission\_count 与 total\_run\_time\_s。
+
+\subsection{实验步骤}
+（1）启动系统并确认 /health 正常；
+
+（2）在前端设置无线模式与 Eb/No；
+
+（3）发送连续控制命令并维持固定实验时长；
+
+（4）导出 CSV 数据并进行离线统计；
+
+（5）重复不同参数组并进行对比。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：实验流程图。}\\
+配置参数、发送命令、采样、导出、统计分析形成闭环。}}
+\caption{实验执行流程示意}
+\label{fig:exp-flow}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:exp-flow”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 图意说明：用于保证实验过程可复现。
+
+\subsection{结果模板（待填）}
+由于仓库中未提供固定批次实验原始数据文件，以下结果以模板方式给出，禁止填入未经验证数字。
+
+\begin{table}[htbp]
+\centering
+\caption{不同无线模式与 Eb/No 的实验结果模板（待填）}
+\label{tab:exp-result-template}
+\begin{tabular}{llllll}
+\hline
+组别 & 模式 & Eb/No(dB) & average\_ber & wireless\_delay\_ms & trajectory\_error\_mean \\
+\hline
+G1 & basic\_awgn & 待补充 & 待补充 & 待补充 & 待补充 \\
+G2 & basic\_awgn & 待补充 & 待补充 & 待补充 & 待补充 \\
+G3 & advanced\_cdl\_ofdm & 待补充 & 待补充 & 待补充 & 待补充 \\
+G4 & advanced\_cdl\_ofdm & 待补充 & 待补充 & 待补充 & 待补充 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{CSV 字段核对表}
+\label{tab:exp-csv-fields}
+\begin{tabular}{ll}
+\hline
+字段名 & 用途 \\
+\hline
+average\_ber / last\_ber & 误码率统计 \\
+wireless\_delay\_ms & 单次无线处理时延 \\
+trajectory\_error\_mean & 轨迹偏差评估 \\
+queue\_pending & 队列积压观测 \\
+wireless\_mode / ebno\_db & 分组对比条件 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：实验指标分析图。}\\
+建议绘制 BER-Eb/No 曲线、时延箱线图、轨迹误差对比柱状图。}}
+\caption{实验结果可视化建议（占位）}
+\label{fig:exp-analysis-template}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:exp-analysis-template”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 插图位置建议：图~\ref{fig:exp-flow} 放在步骤后，图~\ref{fig:exp-analysis-template} 放在结果模板后。
+
+\subsection{结果分析与局限性}
+预期可验证结论模板如下：
+
+（1）在其他条件近似相同情况下，Eb/No 提升通常对应 BER 下降趋势；
+
+（2）advanced\_cdl\_ofdm 模式在 BER 上可能更优，但处理时延可能更高；
+
+（3）队列积压上升会增加控制链路整体滞后感。
+
+局限性说明：
+
+（1）当前实验基于仿真模型，不等价于真实公网链路；
+
+（2）未包含大规模并发用户场景压测数据（待补充）；
+
+（3）未提供跨地区网络实测样本（待补充）。
+
+\subsection{本章小结}
+本章给出了结构化实验框架、变量指标定义、执行步骤和结果模板，确保后续补充数据时可直接落地，不需要重写论文结构。
+
+\subsection{事实核对清单}
+（1）已核对：指标命名与后端 telemetry/csv 字段一致；
+
+（2）已核对：项目支持模式切换与 Eb/No 参数化；
+
+（3）已核对：CSV 导出接口可用于离线分析；
+
+（4）待补充：真实实验数值与统计显著性分析结果。

@@ -1,0 +1,70 @@
+%!TEX root = ../sztuthesis_main.tex
+
+\section{结论与展望}
+
+\subsection{问题定义}
+结论章节需要回答“平台是否完成既定目标、哪些结论具备证据支撑、哪些内容仍需后续补充”。为避免泛化表述，本章仅总结前文可验证事实。
+
+\subsection{设计思路}
+结论组织采用“三段式”：
+
+（1）系统实现层结论；
+
+（2）实验流程层结论；
+
+（3）后续工作展望与边界说明。
+
+\subsection{实现细节}
+本文完成的主要工作如下：
+
+（1）构建了前端控制与后端仿真闭环平台，支持实时命令处理与状态回传；
+
+（2）实现了无线模式切换、Eb/No 参数化与指标观测联动；
+
+（3）实现了网络拓扑地图展示，能够同时表达节点位置与路由器状态；
+
+（4）提供了 CSV 导出接口，为离线分析和论文绘图提供数据入口；
+
+（5）完成了轻量执行模式与 MuJoCo 可选模式的兼容设计。
+
+本文未完成或待补充部分如下：
+
+（1）真实公网链路实测与对照实验数据；
+
+（2）大规模并发压测数据与资源利用率分析；
+
+（3）更高自由度机械臂模型与精确逆运动学验证。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：研究产出闭环图。}\\
+需求、架构、实现、实验、结论形成可迭代环路。}}
+\caption{研究产出闭环示意}
+\label{fig:conclusion-loop}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:conclusion-loop”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 图意说明：强调本课题可持续迭代，而非一次性演示。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：后续研究路线图。}\\
+从仿真平台扩展到真实链路测量与自动化评测。}}
+\caption{后续研究路线示意}
+\label{fig:conclusion-roadmap}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:conclusion-roadmap”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 插图位置建议：图~\ref{fig:conclusion-loop} 放在主要工作总结后，图~\ref{fig:conclusion-roadmap} 放在展望段落后。
+
+\subsection{本章小结}
+本文围绕远程机械臂操控中的网络仿真与可视化问题，完成了从架构到实现再到实验模板的完整工程闭环，为后续补充真实数据提供了可维护论文骨架。
+
+\subsection{事实核对清单}
+（1）已核对：结论条目均可在仓库代码或文档中找到依据；
+
+（2）已核对：未对不存在的数据做数值性推断；
+
+（3）待补充：真实环境实验结果及统计图表。

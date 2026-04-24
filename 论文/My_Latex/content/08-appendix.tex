@@ -1,0 +1,32 @@
+%!TEX root = ../sztuthesis_main.tex
+
+\clearpage
+\markright{附录A 项目补充材料}
+\phantomsection
+\addcontentsline{toc}{section}{附录A 项目补充材料}
+
+{\centering \zihao{-2} \bfseries \heiti 附录A 项目补充材料\par}
+
+\vspace{0.5cm}
+
+\zihao{-4} \songti
+\setlength{\parindent}{2em}
+
+\subsection*{A.1 关键接口与字段（节选）}
+（1）HTTP 健康检查：GET /health；
+
+（2）CSV 导出：GET /api/v1/experiments/export/csv；
+
+（3）WebSocket：/ws；
+
+（4）遥测核心字段：average\_ber、wireless\_delay\_ms、trajectory\_error\_mean、queue\_pending、wireless\_mode、ebno\_db。
+
+\subsection*{A.2 复现实验最小命令}
+启动命令为 docker compose up --build，停止命令为 docker compose down。
+
+\subsection*{A.3 人工补充建议}
+（1）实验批次编号与日期（待补充）；
+
+（2）每组实验持续时长与采样数量（待补充）；
+
+（3）导出 CSV 的统计脚本路径与版本（待补充）。

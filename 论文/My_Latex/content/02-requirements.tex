@@ -1,0 +1,92 @@
+%!TEX root = ../sztuthesis_main.tex
+
+\section{需求分析}
+
+\subsection{问题定义}
+平台需求来自“网络变化影响远程操控”的教学与实验场景，其核心不是追求单次演示，而是支持反复配置、运行和比较。基于代码与文档，可提炼出三类需求：功能需求、非功能需求和可验证约束。
+
+功能需求包括：
+
+（1）支持机械臂关节控制与末端目标控制；
+
+（2）支持无线模式与 Eb/No 配置；
+
+（3）支持 BER、无线处理时延、轨迹误差等指标展示；
+
+（4）支持网络拓扑地图展示路由器位置、时延、繁忙度与排队深度；
+
+（5）支持实验指标 CSV 导出。
+
+非功能需求包括：
+
+（1）单命令启动，降低部署门槛；
+
+（2）前后端职责清晰，便于迭代；
+
+（3）在可选 MuJoCo 依赖不可用时可自动回退，保证系统可运行。
+
+\subsection{设计思路}
+需求建模采用“用户操作路径+系统响应路径”的双视角方法。
+
+用户路径从前端控制面板出发，最终落到状态回显与地图观察；系统路径从消息接收开始，依次经过排队、无线仿真、轨迹执行与指标聚合。该双路径模型可避免需求仅停留在界面层，确保每个可见功能对应至少一个后端可验证处理环节。
+
+\subsection{实现细节}
+依据现有实现，可将需求映射到消息类型与接口：
+
+（1）控制消息：robot\_joint\_control、robot\_ee\_control、robot\_reset；
+
+（2）配置消息：wireless\_config、network\_profile；
+
+（3）数据输出：ack、telemetry、GET /api/v1/experiments/export/csv。
+
+为便于后续测试，本章给出需求到验证点的追踪表，如表~\ref{tab:req-trace} 所示。
+
+\begin{table}[htbp]
+\centering
+\caption{需求-实现-验证追踪表}
+\label{tab:req-trace}
+\begin{tabular}{p{0.17\textwidth}p{0.24\textwidth}p{0.25\textwidth}p{0.22\textwidth}}
+\hline
+需求项 & 代码锚点 & 可观测输出 & 验证方式 \\
+\hline
+关节控制 & WebSocket receiver 中 robot\_joint\_control 分支 & 关节状态变化、ack 回包 & 前端按钮触发并观察 telemetry \\
+末端控制 & robot\_ee\_control + solve\_simple\_ik & IK 目标映射后轨迹执行 & 输入目标位姿并检查回传 \\
+无线模式切换 & wireless\_config 分支 & average\_ber、wireless\_delay\_ms 变化 & 切换模式与 Eb/No 对比 \\
+实验导出 & /api/v1/experiments/export/csv & CSV 文件列头与采样记录 & 浏览器访问导出接口 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：需求用例关系图。}\\
+展示“学生实验用户”与“系统管理员”两类角色对平台功能的使用边界。}}
+\caption{平台需求用例图（占位）}
+\label{fig:req-usecase}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:req-usecase”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 图意说明：阐明系统需求对象与角色边界。
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.92\textwidth}{
+\textbf{图位占位：需求到验证流程图。}\\
+从“提出需求”到“运行验证”形成闭环。}}
+\caption{需求验证流程（占位）}
+\label{fig:req-validation-flow}
+\end{figure}
+
+\noindent 本图流程定义已整理至流程图页面（diagrams/flowcharts.html）中对应条目“fig:req-validation-flow”，可在浏览器查看并导出为 SVG/PNG 后替换本图位。
+\noindent 插图位置建议：图~\ref{fig:req-usecase} 放在需求列表后，图~\ref{fig:req-validation-flow} 放在本章末段。
+
+\subsection{本章小结}
+本章给出需求边界与可验证映射关系，建立了后续架构设计与实现章节的验收基线。
+
+\subsection{事实核对清单}
+（1）已核对：控制、配置与导出接口在代码中存在；
+
+（2）已核对：README 与架构说明对核心指标和地图功能有文字说明；
+
+（3）待补充：面向课程或实验班级的正式用户需求调研数据。
